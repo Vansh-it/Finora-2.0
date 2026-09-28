@@ -2,7 +2,6 @@ import { useState, useRef } from "react";
 import { X, ArrowUp, Sparkles, Loader2 } from "lucide-react";
 import ChatMessage, { type ChatMessageData } from "./ChatMessage";
 import { sendDashboardChatMessage, type ChatHistoryMessage } from "../lib/api";
-import { getToken } from "../lib/auth";
 
 const SUGGESTED = [
   "How did you calculate ROIC?",
@@ -38,13 +37,12 @@ export default function AskFinoraDrawer({ sessionId }: AskFinoraDrawerProps) {
 
     try {
       let res;
-      const token = getToken() || undefined;
       if (sessionId) {
-        res = await sendDashboardChatMessage(question, sessionId, chatHistoryRef.current.slice(-10), token);
+        res = await sendDashboardChatMessage(question, sessionId, chatHistoryRef.current.slice(-10));
       } else {
         // Fallback to regular chat if no session
         const { sendChatMessage } = await import("../lib/api");
-        res = await sendChatMessage(question, chatHistoryRef.current.slice(-10), token);
+        res = await sendChatMessage(question, chatHistoryRef.current.slice(-10));
       }
 
       const assistantMsg: ChatMessageData = {

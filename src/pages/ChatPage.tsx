@@ -1,11 +1,9 @@
 import { useState, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
 import { ArrowUp, Loader2 } from "lucide-react";
 import ChatMessage, { type ChatMessageData } from "../components/ChatMessage";
 import EditorialHeading from "../components/EditorialHeading";
 import HighlightText from "../components/HighlightText";
 import { sendChatMessage, type ChatHistoryMessage } from "../lib/api";
-import { getToken, removeToken } from "../lib/auth";
 
 const SUGGESTIONS = [
   "How did you calculate ROIC for Apple?",
@@ -15,7 +13,6 @@ const SUGGESTIONS = [
 ];
 
 export default function ChatPage() {
-  const navigate = useNavigate();
   const [messages, setMessages] = useState<ChatMessageData[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -40,13 +37,7 @@ export default function ChatPage() {
     chatHistoryRef.current.push({ role: "user", content: q });
 
     try {
-      const token = getToken();
-      if (!token) {
-        removeToken();
-        navigate("/auth", { state: { from: "/chat" } });
-        return;
-      }
-      const res = await sendChatMessage(q, chatHistoryRef.current.slice(-10), token);
+      const res = await sendChatMessage(q, chatHistoryRef.current.slice(-10));
 
       const assistantMsg: ChatMessageData = {
         role: "assistant",

@@ -4,7 +4,6 @@ import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 import EditorialHeading from "../components/EditorialHeading";
 import Annotation from "../components/Annotation";
 import { cn } from "../utils/cn";
-import { getToken, removeToken } from "../lib/auth";
 import { runResearch } from "../lib/api";
 
 const STAGES = [
@@ -41,18 +40,12 @@ export default function ResearchProcessingPage() {
     timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
 
     async function run() {
-      const token = getToken();
-      if (!token) {
-        navigate("/auth", { state: { from: `/research?ticker=${ticker}` } });
-        return;
-      }
-
       try {
         // Animate stages as the pipeline runs
         // Stage 0: immediately show as active
         updateStage(0, "active");
 
-        const result = await runResearch(ticker, "latest", token);
+        const result = await runResearch(ticker, "latest");
 
         // Stop timer
         if (timerRef.current) clearInterval(timerRef.current);
@@ -78,11 +71,6 @@ export default function ResearchProcessingPage() {
       } catch (err) {
         if (timerRef.current) clearInterval(timerRef.current);
         const msg = err instanceof Error ? err.message : "Could not connect to the Finora backend.";
-        if (msg.includes("401") || msg.includes("Invalid") || msg.includes("expired")) {
-          removeToken();
-          navigate("/auth", { state: { from: `/research?ticker=${ticker}` } });
-          return;
-        }
         setErrorMsg(msg);
         setStageStatuses((prev) => {
           const idx = prev.findIndex((s) => s === "active");

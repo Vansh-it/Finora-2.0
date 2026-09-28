@@ -4,7 +4,6 @@ import { ArrowRight } from "lucide-react";
 import EditorialHeading from "../components/EditorialHeading";
 import HighlightText from "../components/HighlightText";
 import PaperTexture from "../components/PaperTexture";
-import { getToken } from "../lib/auth";
 
 interface ResearchEntry {
   session_id: string;
@@ -31,20 +30,9 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = getToken();
-    if (!token) {
-      navigate("/auth", { state: { from: "/history" } });
-      return;
-    }
-
-    fetch("/api/research/history", {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    fetch("/api/research/history")
       .then((res) => {
-        if (res.status === 401) {
-          navigate("/auth", { state: { from: "/history" } });
-          return null;
-        }
+        if (!res.ok) return null;
         return res.json();
       })
       .then((data) => {
@@ -55,7 +43,7 @@ export default function HistoryPage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [navigate]);
+  }, []);
 
   function formatDate(iso: string): string {
     try {

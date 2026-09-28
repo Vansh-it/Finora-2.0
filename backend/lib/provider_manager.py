@@ -5,11 +5,14 @@ provider is tried immediately. The user gets a response within seconds, never
 minutes.
 
 Provider speed ranking (tested):
-  1. Nemotron Lightning (NIM)      ~1.0s  — fastest, reliable
-  2. MiniMax M3 (OpenRouter)       ~3.1s  — clean output, reliable
-  3. Nemotron Ultra (OpenRouter)   ~21s   — powerful, for heavy reasoning only
+  1. Nemotron Super 120B (NIM)     ~3.3s  — fastest, reliable
+  2. Nemotron Super 120B (OpenRouter) ~6s — clean fallback
+  3. Nemotron Ultra 550B (OpenRouter) ~6s — powerful, for heavy reasoning only
 
-DeepSeek V4 Flash (NIM) is BROKEN (times out every request) — excluded.
+DEPRECATED/BROKEN model IDs (removed — verified failing):
+  - nvidia/nemotron-3.5-lightning-30b-a3b  (NIM)   → read timeout
+  - minimax/minimax-m3:free                (OR)    → HTTP 404 unavailable free
+  - deepseek / kimi NIM models                     → timeout / unconfigured
 """
 
 from __future__ import annotations
@@ -78,17 +81,19 @@ class Provider:
             return False
         return True
 
-    def mark_rate_limited(self, cooldown_seconds: float = 120.0) -> None:
+    def mark_rate_limited(self, cooldown_seconds: float = 120.0, reason: str = "") -> None:
         self.status = ProviderStatus.RATE_LIMITED
         self.cooldown_until = time.time() + cooldown_seconds
         self.error_count += 1
         self.total_failures += 1
+        self.last_error = reason or "rate limited"
 
-    def mark_error(self, cooldown_seconds: float = 5.0) -> None:
+    def mark_error(self, cooldown_seconds: float = 5.0, reason: str = "") -> None:
         self.status = ProviderStatus.ERROR
         self.cooldown_until = time.time() + cooldown_seconds
         self.error_count += 1
         self.total_failures += 1
+        self.last_error = reason or "provider error"
 
     def mark_healthy(self, latency: float = 0.0) -> None:
         self.status = ProviderStatus.HEALTHY
@@ -100,11 +105,12 @@ class Provider:
         else:
             self.avg_latency = latency
 
-    def mark_auth_failed(self) -> None:
+    def mark_auth_failed(self, reason: str = "") -> None:
         self.status = ProviderStatus.ERROR
         self.cooldown_until = time.time() + 86400.0  # 24 hour cooldown
         self.error_count += 1
         self.total_failures += 1
+        self.last_error = reason or "auth failed"
 
     def get_cooldown_remaining(self) -> float:
         return max(0.0, self.cooldown_until - time.time())
@@ -116,34 +122,34 @@ class Provider:
 # IMPORTANT: Only use PROVEN WORKING providers in primary slots.
 TASK_ROUTING: dict[TaskType, list[dict]] = {
     TaskType.QUICK_CHAT: [
-        # MiniMax M3 first — RELIABLE ~3s, clean output. Nemotron Lightning is flaky on NIM.
-        {"provider": "openrouter_minimax_m3", "max_tokens": 512, "temperature": 0.7, "top_p": 0.9},
-        {"provider": "nvidia_nemotron_lightning", "max_tokens": 512, "temperature": 0.7, "top_p": 0.9},
+        # NVIDIA Nemotron Super (NIM) first — RELIABLE ~3s, clean output.
+        {"provider": "nvidia_nemotron", "max_tokens": 512, "temperature": 0.7, "top_p": 0.9},
+        {"provider": "openrouter_nemotron", "max_tokens": 512, "temperature": 0.7, "top_p": 0.9},
         {"provider": "openrouter_nemotron_ultra", "max_tokens": 512, "temperature": 0.7, "top_p": 0.9},
     ],
     TaskType.RESEARCH: [
-        {"provider": "openrouter_minimax_m3", "max_tokens": 1024, "temperature": 0.3, "top_p": 0.85},
-        {"provider": "nvidia_nemotron_lightning", "max_tokens": 1024, "temperature": 0.3, "top_p": 0.85},
+        {"provider": "nvidia_nemotron", "max_tokens": 1024, "temperature": 0.3, "top_p": 0.85},
+        {"provider": "openrouter_nemotron", "max_tokens": 1024, "temperature": 0.3, "top_p": 0.85},
         {"provider": "openrouter_nemotron_ultra", "max_tokens": 1024, "temperature": 0.3, "top_p": 0.85},
     ],
     TaskType.HEAVY_REASONING: [
         {"provider": "openrouter_nemotron_ultra", "max_tokens": 2048, "temperature": 0.2, "top_p": 0.85},
-        {"provider": "openrouter_minimax_m3", "max_tokens": 1024, "temperature": 0.2, "top_p": 0.85},
-        {"provider": "nvidia_nemotron_lightning", "max_tokens": 1024, "temperature": 0.2, "top_p": 0.85},
+        {"provider": "nvidia_nemotron", "max_tokens": 1024, "temperature": 0.2, "top_p": 0.85},
+        {"provider": "openrouter_nemotron", "max_tokens": 1024, "temperature": 0.2, "top_p": 0.85},
     ],
     TaskType.CALCULATION: [
-        {"provider": "openrouter_minimax_m3", "max_tokens": 768, "temperature": 0.1, "top_p": 0.8},
-        {"provider": "nvidia_nemotron_lightning", "max_tokens": 768, "temperature": 0.1, "top_p": 0.8},
+        {"provider": "nvidia_nemotron", "max_tokens": 768, "temperature": 0.1, "top_p": 0.8},
+        {"provider": "openrouter_nemotron", "max_tokens": 768, "temperature": 0.1, "top_p": 0.8},
         {"provider": "openrouter_nemotron_ultra", "max_tokens": 768, "temperature": 0.1, "top_p": 0.8},
     ],
     TaskType.INTENT_CLASSIFY: [
-        {"provider": "openrouter_minimax_m3", "max_tokens": 128, "temperature": 0.0, "top_p": 1.0},
-        {"provider": "nvidia_nemotron_lightning", "max_tokens": 128, "temperature": 0.0, "top_p": 1.0},
+        {"provider": "nvidia_nemotron", "max_tokens": 128, "temperature": 0.0, "top_p": 1.0},
+        {"provider": "openrouter_nemotron", "max_tokens": 128, "temperature": 0.0, "top_p": 1.0},
     ],
     TaskType.EXECUTIVE_SUMMARY: [
         {"provider": "openrouter_nemotron_ultra", "max_tokens": 2048, "temperature": 0.3, "top_p": 0.9},
-        {"provider": "openrouter_minimax_m3", "max_tokens": 1024, "temperature": 0.3, "top_p": 0.9},
-        {"provider": "nvidia_nemotron_lightning", "max_tokens": 1024, "temperature": 0.3, "top_p": 0.9},
+        {"provider": "nvidia_nemotron", "max_tokens": 1024, "temperature": 0.3, "top_p": 0.9},
+        {"provider": "openrouter_nemotron", "max_tokens": 1024, "temperature": 0.3, "top_p": 0.9},
     ],
 }
 
@@ -215,31 +221,38 @@ class ProviderManager:
         nvidia_base = "https://integrate.api.nvidia.com/v1"
         openrouter_base = "https://openrouter.ai/api/v1"
 
+        logger.info(f"[LLM] NVIDIA configured: {'yes' if nvidia_key else 'no'}")
+        logger.info(f"[LLM] OpenRouter configured: {'yes' if openrouter_key else 'no'}")
+
         # ── NVIDIA NIM ──
 
-        # Nemotron Lightning — FASTEST (~1s), reliable workhorse
-        self._providers["nvidia_nemotron_lightning"] = Provider(
-            name="nvidia_nemotron_lightning",
-            model="nvidia/nemotron-3.5-lightning-30b-a3b",
+        # Nemotron Super — fast (~3s), reliable workhorse (verified working)
+        self._providers["nvidia_nemotron"] = Provider(
+            name="nvidia_nemotron",
+            model="nvidia/nemotron-3-super-120b-a12b",
             base_url=nvidia_base,
             api_key_env="NVIDIA_API_KEY",
             status=ProviderStatus.HEALTHY if nvidia_key else ProviderStatus.UNCONFIGURED,
-            tags=["fast", "reliable", "free"],
+            tags=["fast", "reliable", "primary"],
+        )
+        logger.info(
+            f"[LLM] NVIDIA initialization: {'success' if nvidia_key else 'skipped'}"
+            f" (model=nvidia/nemotron-3-super-120b-a12b)"
         )
 
         # ── OpenRouter ──
 
-        # MiniMax M3 — Clean output (~3s), strong general purpose
-        self._providers["openrouter_minimax_m3"] = Provider(
-            name="openrouter_minimax_m3",
-            model="minimax/minimax-m3:free",
+        # Nemotron Super via OpenRouter — free fallback (verified working)
+        self._providers["openrouter_nemotron"] = Provider(
+            name="openrouter_nemotron",
+            model="nvidia/nemotron-3-super-120b-a12b:free",
             base_url=openrouter_base,
             api_key_env="OPENROUTER_API_KEY",
             status=ProviderStatus.HEALTHY if openrouter_key else ProviderStatus.UNCONFIGURED,
-            tags=["clean", "reliable", "free"],
+            tags=["free", "reliable", "fallback"],
         )
 
-        # Nemotron Ultra 550B — Most powerful (~21s), for heavy reasoning only
+        # Nemotron Ultra 550B — most powerful, for heavy reasoning only
         self._providers["openrouter_nemotron_ultra"] = Provider(
             name="openrouter_nemotron_ultra",
             model="nvidia/nemotron-3-ultra-550b-a55b:free",
@@ -271,7 +284,10 @@ class ProviderManager:
         max_tokens: int,
         temperature: float,
         top_p: float,
+        finish_reason_out: list | None = None,
     ) -> str:
+        # finish_reason_out: optional single-element list that receives the
+        # provider's finish_reason for truncation detection upstream.
         """Make a SINGLE call to a provider with a hard timeout.
 
         Uses httpx directly for proper timeout + connection cancellation.
@@ -304,32 +320,50 @@ class ProviderManager:
         url = f"{provider.base_url}/chat/completions"
 
         # httpx with per-request timeout that KILLS the connection
-        with httpx.Client(timeout=httpx.Timeout(
-            connect=5.0,        # 5s to connect
-            read=PER_PROVIDER_TIMEOUT,  # Max time for the response
-            write=5.0,          # 5s to send
-            pool=5.0,           # 5s for connection pool
-        )) as client:
-            resp = client.post(url, json=payload, headers=headers)
+        try:
+            with httpx.Client(timeout=httpx.Timeout(
+                connect=5.0,        # 5s to connect
+                read=PER_PROVIDER_TIMEOUT,  # Max time for the response
+                write=5.0,          # 5s to send
+                pool=5.0,           # 5s for connection pool
+            )) as client:
+                resp = client.post(url, json=payload, headers=headers)
+        except (httpx.TimeoutException, TimeoutError) as exc:
+            logger.error(f"[LLM] {provider.name} request failed: timeout ({exc.__class__.__name__})")
+            raise TimeoutError(f"{provider.name}: request timed out") from exc
+        except httpx.HTTPError as exc:
+            logger.error(f"[LLM] {provider.name} request failed: network error ({exc.__class__.__name__})")
+            raise RuntimeError(f"{provider.name}: network error ({exc.__class__.__name__})") from exc
 
         elapsed = time.time() - t0
 
         if resp.status_code == 401 or resp.status_code == 403:
+            logger.error(f"[LLM] {provider.name} request failed: HTTP {resp.status_code} (auth)")
             raise PermissionError(f"{provider.name}: auth failed ({resp.status_code})")
         if resp.status_code == 429:
+            logger.error(f"[LLM] {provider.name} request failed: HTTP 429 (rate limit)")
             raise RuntimeError(f"{provider.name}: rate limited (429)")
         if resp.status_code >= 500:
+            logger.error(f"[LLM] {provider.name} request failed: HTTP {resp.status_code} (server error)")
             raise RuntimeError(f"{provider.name}: server error ({resp.status_code})")
         if resp.status_code != 200:
+            logger.error(f"[LLM] {provider.name} request failed: HTTP {resp.status_code} (provider error)")
             raise RuntimeError(f"{provider.name}: HTTP {resp.status_code}: {resp.text[:200]}")
 
         data = resp.json()
         choices = data.get("choices", [])
         if not choices:
+            logger.error(f"[LLM] {provider.name} request failed: malformed provider response (no choices)")
             raise ValueError(f"{provider.name}: no choices in response")
 
         msg = choices[0].get("message", {})
         content = (msg.get("content") or "").strip()
+
+        # Surface finish_reason for upstream truncation detection
+        if finish_reason_out is not None:
+            finish_reason_out.clear()
+            fr = choices[0].get("finish_reason") or ""
+            finish_reason_out.append(str(fr))
 
         # Log and discard any reasoning fields
         for field_name in ("reasoning_content", "reasoning"):
@@ -380,6 +414,16 @@ class ProviderManager:
             ]
 
         if not candidates:
+            # Explain WHY no provider is usable (diagnostics only, no secrets)
+            for p in self._providers.values():
+                if p.status == ProviderStatus.UNCONFIGURED:
+                    logger.error(f"[LLM] No providers available: {p.name} is unconfigured (missing {p.api_key_env})")
+                elif not p.is_available():
+                    cdr = p.get_cooldown_remaining()
+                    logger.error(
+                        f"[LLM] No providers available: {p.name} in cooldown "
+                        f"{cdr:.0f}s (status={p.status.value}, last_error='{p.last_error}')"
+                    )
             raise RuntimeError("No LLM providers available. Check API keys in .env")
 
         last_error = ""
@@ -422,7 +466,7 @@ class ProviderManager:
             except TimeoutError as exc:
                 last_error = str(exc)
                 logger.error(f"✗ TIMEOUT: {last_error}")
-                provider.mark_error(cooldown_seconds=30.0)
+                provider.mark_error(cooldown_seconds=30.0, reason="timeout")
                 continue
 
             except Exception as exc:
@@ -432,18 +476,104 @@ class ProviderManager:
                 logger.error(f"✗ {provider.name} failed ({elapsed:.1f}s): {last_error}")
 
                 if any(t in exc_msg for t in ("rate", "quota", "429", "limit")):
-                    provider.mark_rate_limited(120.0)
+                    provider.mark_rate_limited(120.0, reason=last_error)
                 elif any(t in exc_msg for t in ("auth", "invalid", "permission", "401", "403")):
-                    provider.mark_auth_failed()
+                    provider.mark_auth_failed(reason=last_error)
                 elif any(t in exc_msg for t in ("timeout", "timed out", "deadline")):
-                    provider.mark_error(30.0)
+                    provider.mark_error(30.0, reason="timeout")
                 else:
-                    provider.mark_error(5.0)
+                    # 5xx / malformed responses: escalate the cooldown when
+                    # errors repeat so a flapping upstream stops taxing every
+                    # request with a dead first attempt.
+                    is_server_err = ("server error" in exc_msg
+                                     or "no choices" in exc_msg
+                                     or "empty response" in exc_msg)
+                    base = 15.0 if is_server_err else 5.0
+                    cooldown = min(base * (2.0 if provider.error_count >= 2 else 1.0), 120.0)
+                    provider.mark_error(cooldown_seconds=cooldown, reason=last_error)
                 continue
 
         total_elapsed = time.time() - global_start
         raise RuntimeError(
             f"All providers failed after {total_elapsed:.1f}s "
+            f"({attempts} attempts). Last error: {last_error}"
+        )
+
+    def _generate_with_failover_meta(
+        self,
+        messages: list[dict[str, str]],
+        task_type: TaskType = TaskType.QUICK_CHAT,
+        max_tokens_override: int | None = None,
+    ) -> tuple[str, str]:
+        """Like _generate_with_failover but returns (text, finish_reason).
+
+        Honors max_tokens_override (used by chat routes to cap/raise output
+        length per question complexity).
+        """
+        global_start = time.time()
+        candidates = self._select_providers_for_task(task_type)
+
+        if not candidates:
+            candidates = [
+                (p, {"max_tokens": 512, "temperature": 0.5, "top_p": 0.9})
+                for p in self._providers.values()
+                if p.is_available()
+            ]
+        if not candidates:
+            raise RuntimeError("No LLM providers available. Check API keys in .env")
+
+        last_error = ""
+        attempts = 0
+        for provider, config in candidates:
+            elapsed_global = time.time() - global_start
+            if elapsed_global >= GLOBAL_TIMEOUT:
+                break
+            attempts += 1
+            remaining = GLOBAL_TIMEOUT - elapsed_global
+            logger.info(
+                f"ROUTER: task={task_type.value} → {provider.name} "
+                f"(attempt {attempts}, {remaining:.0f}s remaining)"
+            )
+            fr_holder: list[str] = []
+            try:
+                content = self._call_provider(
+                    provider,
+                    messages,
+                    max_tokens=max_tokens_override or config.get("max_tokens", 512),
+                    temperature=config.get("temperature", 0.5),
+                    top_p=config.get("top_p", 0.9),
+                    finish_reason_out=fr_holder,
+                )
+                finish_reason = fr_holder[0] if fr_holder else ""
+                total_elapsed = time.time() - global_start
+                logger.info(
+                    f"✓ Chat(meta) complete in {total_elapsed:.1f}s "
+                    f"(provider: {provider.name}, finish_reason={finish_reason or 'n/a'})"
+                )
+                return content, finish_reason
+            except Exception as exc:
+                last_error = str(exc)
+                logger.error(f"✗ {provider.name} failed: {last_error}")
+                exc_msg = last_error.lower()
+                if any(t in exc_msg for t in ("rate", "quota", "429", "limit")):
+                    provider.mark_rate_limited(120.0, reason=last_error)
+                elif any(t in exc_msg for t in ("auth", "invalid", "permission", "401", "403")):
+                    provider.mark_auth_failed(reason=last_error)
+                elif any(t in exc_msg for t in ("timeout", "timed out", "deadline")):
+                    provider.mark_error(30.0, reason="timeout")
+                else:
+                    # Escalating cooldown for repeated 5xx/malformed failures
+                    # (see _generate_with_failover).
+                    is_server_err = ("server error" in exc_msg
+                                     or "no choices" in exc_msg
+                                     or "empty response" in exc_msg)
+                    base = 15.0 if is_server_err else 5.0
+                    cooldown = min(base * (2.0 if provider.error_count >= 2 else 1.0), 120.0)
+                    provider.mark_error(cooldown_seconds=cooldown, reason=last_error)
+                continue
+
+        raise RuntimeError(
+            f"All providers failed after {time.time() - global_start:.1f}s "
             f"({attempts} attempts). Last error: {last_error}"
         )
 
@@ -468,6 +598,24 @@ class ProviderManager:
             raise ValueError("messages must be a non-empty list")
         return self._generate_with_failover(messages, task_type=task_type)
 
+    def generate_chat_with_meta(
+        self,
+        messages: list[dict[str, str]],
+        task_type: TaskType = TaskType.QUICK_CHAT,
+        max_tokens_override: int | None = None,
+    ) -> tuple[str, str]:
+        """Chat generation that also reports the provider finish_reason.
+
+        Returns (text, finish_reason). finish_reason is "" when unavailable.
+        Used by the chat orchestrator's completeness validator to detect
+        truncation instead of guessing from heuristics alone.
+        """
+        if not messages:
+            raise ValueError("messages must be a non-empty list")
+        return self._generate_with_failover_meta(
+            messages, task_type=task_type, max_tokens_override=max_tokens_override,
+        )
+
     def get_status(self) -> dict:
         """Provider status for monitoring."""
         available_count = sum(1 for p in self._providers.values() if p.is_available())
@@ -487,6 +635,7 @@ class ProviderManager:
                     "cooldown_remaining": round(p.get_cooldown_remaining(), 1),
                     "total_requests": p.total_requests,
                     "total_failures": p.total_failures,
+                    "last_error": p.last_error,
                     "tags": p.tags,
                 }
                 for p in self._providers.values()

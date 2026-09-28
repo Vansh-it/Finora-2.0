@@ -216,6 +216,25 @@ def get_user_from_token(token: str) -> Optional[User]:
     return _users.get(session.user_id)
 
 
+GUEST_USER_ID = "guest"
+
+
+def get_guest_user() -> User:
+    """Return the shared anonymous user used for unauthenticated access."""
+    _ensure_loaded()
+    user = _users.get(GUEST_USER_ID)
+    if user is None:
+        user = User(
+            user_id=GUEST_USER_ID,
+            email="",
+            name="Guest",
+            research_runs_limit=100000,
+        )
+        _users[GUEST_USER_ID] = user
+        _persist_user(user)
+    return user
+
+
 def sign_out(token: str) -> bool:
     """Invalidate a session. Returns True if found."""
     _ensure_loaded()

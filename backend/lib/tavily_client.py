@@ -60,6 +60,9 @@ def _set_cache(key: str, data):
     _tavily_cache.set(key, data)
 
 
+_search_count = 0  # module-level counter (must exist before first search)
+
+
 def get_search_count() -> int:
     """Return number of Tavily searches performed since import/reset."""
     return _search_count

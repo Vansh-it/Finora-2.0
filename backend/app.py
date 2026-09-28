@@ -18,6 +18,14 @@ import logging
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
+# ── Load environment variables from the project root ─────────────────────────
+# Deterministic regardless of where the process is launched from.
+from pathlib import Path as _Path
+from dotenv import load_dotenv as _load_dotenv
+
+_project_root = _Path(__file__).resolve().parent.parent
+_load_dotenv(_project_root / ".env")
+
 # ── Structured pipeline logging ──────────────────────────────────────────────
 logger = logging.getLogger("finora.pipeline")
 if not logger.handlers:
@@ -60,7 +68,7 @@ from lib.executive_summary import generate_executive_summary  # noqa: E402
 from lib.twelve_data_client import get_market_snapshot, fetch_historical_price  # noqa: E402
 from lib.valuation_engine import calculate_valuation  # noqa: E402
 from lib.auth_service import (  # noqa: E402
-    sign_up, sign_in, sign_out, get_user_from_token, get_user,
+    sign_out, get_user_from_token, get_user, get_guest_user,
     increment_research_runs, can_use_research,
 )
 from lib.chat_usage import can_send_message, record_message, get_usage as get_chat_usage  # noqa: E402
@@ -69,6 +77,10 @@ from lib.business_quant_client import is_available as bq_available  # noqa: E402
 from lib.response_sanitizer import sanitize_response  # noqa: E402
 from lib.ssrf_guard import safe_url_or_none  # noqa: E402
 from lib.company_resolver import get_universe, smart_resolve, suggest_companies, parse_research_query, AmbiguousCompanyError  # noqa: E402
+# Chat Intelligence Engine
+from lib.chat.orchestrator import ChatOrchestrator  # noqa: E402
+from lib.chat.router import route_query  # noqa: E402
+from lib.chat.validator import validate_answer  # noqa: E402
 # Finora 2.0 imports
 from lib.fmp_client import is_available as fmp_available, get_company_profile as fmp_profile, get_ebitda as fmp_ebitda  # noqa: E402
 from lib.stooq_client import fetch_historical_price as stooq_fetch_price  # noqa: E402
@@ -162,14 +174,13 @@ def _validate_session_id(session_id: str) -> str | None:
 
 
 def _get_auth_user():
-    """Extract and validate the authenticated user from the request. Returns (user, error_response)."""
+    """Extract the acting user. Falls back to the shared guest user when no valid token is supplied."""
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if not token:
-        return None, (jsonify({"error": "Missing Authorization header"}), 401)
-    user = get_user_from_token(token)
-    if user is None:
-        return None, (jsonify({"error": "Invalid or expired session"}), 401)
-    return user, None
+    if token:
+        user = get_user_from_token(token)
+        if user is not None:
+            return user, None
+    return get_guest_user(), None
 
 
 def _check_session_ownership(session, user):
@@ -180,59 +191,6 @@ def _check_session_ownership(session, user):
 
 
 # ── Auth routes ────────────────────────────────────────────────────────────
-
-@app.post("/api/auth/signup")
-def api_auth_signup():
-    """Create a new user account."""
-    body = request.get_json(silent=True) or {}
-    email = body.get("email", "")
-    password = body.get("password", "")
-    name = body.get("name", "")
-    if not email or not password:
-        return jsonify({"error": "Email and password are required"}), 400
-    # Rate limit auth attempts per IP
-    client_ip = request.remote_addr or "unknown"
-    allowed, reason = _check_auth_rate_limit(client_ip)
-    if not allowed:
-        return jsonify({"error": reason}), 429
-    # Validate email format
-    if not isinstance(email, str) or len(email) > MAX_EMAIL_LENGTH or not _EMAIL_RE.match(email.strip()):
-        return jsonify({"error": "Invalid email format"}), 400
-    # Sanitize name
-    if name and isinstance(name, str):
-        name = name.strip()[:MAX_NAME_LENGTH]
-    try:
-        result = sign_up(email, password, name)
-        return jsonify(result)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        logger.error(f"Signup failed: {e}")
-        return jsonify({"error": "Signup failed"}), 500
-
-
-@app.post("/api/auth/signin")
-def api_auth_signin():
-    """Authenticate an existing user."""
-    body = request.get_json(silent=True) or {}
-    email = body.get("email", "")
-    password = body.get("password", "")
-    if not email or not password:
-        return jsonify({"error": "Email and password are required"}), 400
-    # Rate limit auth attempts per IP
-    client_ip = request.remote_addr or "unknown"
-    allowed, reason = _check_auth_rate_limit(client_ip)
-    if not allowed:
-        return jsonify({"error": reason}), 429
-    try:
-        result = sign_in(email, password)
-        return jsonify(result)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        logger.error(f"Signin failed: {e}")
-        return jsonify({"error": "Signin failed"}), 500
-
 
 @app.post("/api/auth/signout")
 def api_auth_signout():
@@ -507,6 +465,11 @@ def api_fetch_filings():
     update_session_status(session_id, "resolving_company")
     try:
         company = resolve_company(session.company)
+        # Region dispatch: refuse a company whose region has no live pipeline
+        # *before* starting the SEC fetch, so an unsupported market fails with
+        # a clear reason instead of a confusing EDGAR error later.
+        from lib.core.regions import require_supported_region, UnsupportedRegionError
+        require_supported_region(company)
         # Enrich with FMP profile — best-effort
         try:
             if fmp_available():
@@ -520,6 +483,18 @@ def api_fetch_filings():
         set_session_company_meta(session_id, company.to_dict())
         update_session_status(session_id, "company_resolved")
         logger.info(f"RESOLVE_COMPANY_END session_id={session_id[:12]}... elapsed={__import__('time').time()-t0:.1f}s cik={company.cik}")
+    except UnsupportedRegionError as exc:
+        # Resolution succeeded; the market itself has no live pipeline yet.
+        logger.info(f"REGION_UNSUPPORTED session_id={session_id[:12]}... "
+                    f"region={exc.region.value if exc.region else 'UNKNOWN'} "
+                    f"country={exc.country_code}")
+        set_session_error(session_id, str(exc))
+        return jsonify({
+            "error": str(exc),
+            "status": "error",
+            "region": exc.region.value if exc.region else None,
+            "country": exc.country_code,
+        }), 501
     except ValueError as exc:
         logger.error(f"PIPELINE_FAILED session_id={session_id[:12]}... stage=resolve_company error={exc}")
         set_session_error(session_id, f"Could not resolve company: {exc}")
@@ -1429,34 +1404,36 @@ def api_chat():
     # Limit history to prevent abuse
     history = history[-10:]
 
-    # Build proper chat messages with system/user/assistant roles
-    messages = [{"role": "system", "content": FINORA_SYSTEM_PROMPT}]
+    # Optional session attachment: the plain chat endpoint accepts a
+    # session_id so the orchestrator can ground answers when present.
+    body_session_id = body.get("session_id", "")
+    session = None
+    if body_session_id and _SESSION_ID_RE.match(str(body_session_id)):
+        session = get_session(str(body_session_id))
 
-    for msg in history:
-        role = msg.get("role", "user")
-        content = str(msg.get("content", ""))[:500]
-        if role in ("user", "assistant"):
-            messages.append({"role": role, "content": content})
-
-    messages.append({"role": "user", "content": message})
-
-    manager = get_manager()
+    orchestrator = ChatOrchestrator(get_manager(), session=session)
     start_time = time.time()
 
     try:
-        # Route to best model for this task
-        task_type = classify_task(message, has_research_context=False)
-        text = manager.generate_chat(messages, task_type=task_type)
-        text = sanitize_response(text)
+        outcome = orchestrator.handle(message, history)
+        text = sanitize_response(outcome.response)
 
-        active_after = manager.get_status()["active_provider"]
         elapsed_ms = round((time.time() - start_time) * 1000)
 
         return jsonify({
             "response": text,
-            "model_used": active_after,
+            "model_used": get_status().get("active_provider", ""),
+            "task_type": outcome.task_type,
+            "route": outcome.route,
             "status": "success",
             "elapsed_ms": elapsed_ms,
+            "repaired": outcome.repaired,
+            "sources": outcome.sources[:6],
+            "calculations": [
+                {k: c.get(k) for k in ("metric", "value", "display", "formula",
+                                       "period", "status", "note")}
+                for c in outcome.calculations[:8]
+            ],
             "usage": {
                 "remaining": usage["remaining"],
                 "limit": usage["limit"],
@@ -1501,159 +1478,34 @@ def api_dashboard_chat():
     if len(message) > MAX_MESSAGE_LENGTH:
         return jsonify({"error": f"Message too long. Maximum {MAX_MESSAGE_LENGTH} characters."}), 400
 
-    # Build session context for the LLM
-    session_context = ""
+    # Build session context for the LLM — delegated to the chat orchestrator,
+    # which routes the question and builds a compact, question-specific
+    # evidence pack (with targeted retrieval when local context is thin).
+    session = None
     if session_id:
         session = get_session(session_id)
-        if session:
-            try:
-                # Compact session context
-                meta = session.company_meta or {}
-                stmts = session.financial_statements or {}
-                metrics = session.calculated_metrics or {}
-                valuation = session.valuation_metrics or {}
-                summary = session.executive_summary or {}
-                verification = session.verification_results or {}
 
-                periods = stmts.get("periods", [])
-                latest = periods[-1] if periods else ""
-
-                # Company info
-                ctx_parts = [
-                    f"Company: {meta.get('name', session.company)} ({meta.get('ticker', '')})",
-                    f"Ticker: {meta.get('ticker', '')}  Exchange: {meta.get('exchange', '')}",
-                    f"Periods: {', '.join(periods)}",
-                    f"Latest period: {latest}",
-                ]
-
-                # Key financials
-                income = stmts.get("income_statement", {})
-                if latest:
-                    for key in ["revenue", "gross_profit", "operating_income", "net_income", "diluted_eps"]:
-                        fact = income.get(key, {})
-                        if isinstance(fact, dict) and latest in fact and isinstance(fact[latest], dict):
-                            val = fact[latest].get("value")
-                            if val is not None:
-                                ctx_parts.append(f"{key}: ${val/1e9:.1f}B" if abs(val) >= 1e9 else f"{key}: ${val:.2f}")
-                        elif isinstance(fact, dict) and "value" in fact:
-                            val = fact["value"]
-                            if val is not None:
-                                ctx_parts.append(f"{key}: ${val/1e9:.1f}B" if abs(val) >= 1e9 else f"{key}: ${val:.2f}")
-
-                # Calculated metrics with methodology
-                annual = metrics.get("annual_metrics", {})
-                if latest and latest in annual:
-                    for mid in ["gross_margin", "operating_margin", "net_margin", "roa", "roe", "roic",
-                               "free_cash_flow", "current_ratio", "debt_to_equity", "roce",
-                               "ebitda", "ebitda_margin", "fcf_margin", "cash_conversion",
-                               "interest_coverage", "debt_to_ebitda", "asset_turnover"]:
-                        m = annual[latest].get(mid, {})
-                        if isinstance(m, dict) and m.get("status") == "calculated":
-                            calc_str = m.get('calculation', '')
-                            formula_str = m.get('formula', '')
-                            ctx_parts.append(
-                                f"{mid}: {m.get('display_value', '')} | "
-                                f"Formula: {formula_str} | "
-                                f"Calculation: {calc_str}"
-                            )
-                    # Also include growth metrics
-                    growth = metrics.get("growth_metrics", {})
-                    for glbl, gm_group in growth.items():
-                        for mid in ["revenue_growth", "net_income_growth", "eps_growth"]:
-                            m = gm_group.get(mid, {})
-                            if isinstance(m, dict) and m.get("status") == "calculated":
-                                ctx_parts.append(f"{mid} ({glbl}): {m.get('display_value', '')}")
-                    # Unavailable metrics
-                    for mid, m in annual[latest].items():
-                        if isinstance(m, dict) and m.get("status") == "unavailable":
-                            ctx_parts.append(f"{mid}: UNAVAILABLE — {m.get('reason', 'unknown')}")
-
-                # Valuation
-                val_metrics = valuation.get("valuation_metrics", {})
-                for vm in ["share_price", "market_cap", "pe_ratio", "ev_to_revenue"]:
-                    m = val_metrics.get(vm, {})
-                    if isinstance(m, dict) and m.get("status") == "calculated":
-                        ctx_parts.append(f"{vm}: {m.get('display_value', '')}")
-
-                # Executive summary overview
-                if summary.get("executive_overview"):
-                    ctx_parts.append(f"\nExecutive Summary: {summary['executive_overview'][:500]}")
-
-                # Key findings
-                if summary.get("highlights"):
-                    for h in summary["highlights"][:3]:
-                        ctx_parts.append(f"Highlight: {h.get('title', '')} — {h.get('text', '')[:200]}")
-
-                # Forensic scores
-                forensic = session.forensic_scores or {}
-                piotroski = forensic.get("piotroski")
-                if piotroski and isinstance(piotroski, dict) and piotroski.get("score") is not None:
-                    ctx_parts.append(f"\nPiotroski F-Score: {piotroski['score']}/9 ({piotroski.get('status', '')})")
-                altman = forensic.get("altman")
-                if altman and isinstance(altman, dict) and altman.get("score") is not None:
-                    ctx_parts.append(f"Altman Z-Score: {altman['score']:.2f} ({altman.get('status', '')})")
-                beneish = forensic.get("beneish")
-                if beneish and isinstance(beneish, dict) and beneish.get("score") is not None:
-                    ctx_parts.append(f"Beneish M-Score: {beneish['score']:.2f} ({beneish.get('status', '')})")
-
-                # Red flags
-                red_flags = session.red_flags or []
-                if red_flags:
-                    ctx_parts.append(f"\nRed Flags ({len(red_flags)} items):")
-                    for rf in red_flags[:5]:
-                        if isinstance(rf, dict):
-                            ctx_parts.append(f"  - [{rf.get('severity', 'medium').upper()}] {rf.get('headline', '')}")
-
-                # Macro context
-                macro = session.macro_context or {}
-                if macro.get("available") and macro.get("strip"):
-                    ctx_parts.append("\nMacro Context:")
-                    for item in macro["strip"]:
-                        ctx_parts.append(f"  {item.get('label', '')}: {item.get('value', '')}")
-
-                # Data quality
-                ver_summary = verification.get("summary", {})
-                cross = ver_summary.get("exact_matches", 0) + ver_summary.get("within_tolerance", 0)
-                if cross > 0:
-                    ctx_parts.append(f"\nData Quality: {cross} metrics cross-verified against external sources.")
-
-                session_context = "\n".join(ctx_parts)
-            except Exception as ctx_err:
-                logger.warning(f"Dashboard chat context build failed: {ctx_err}")
-                session_context = ""  # degrade gracefully — still answer without data
-
-    # Build system message with research context
-    system_content = FINORA_DASHBOARD_CHAT_PROMPT_TEMPLATE
-    if session_context:
-        system_content += f"\n\n--- RESEARCH DATA ---\n{session_context}\n--- END RESEARCH DATA ---"
-
-    # Build proper chat messages with system/user/assistant roles
-    messages = [{"role": "system", "content": system_content}]
-
-    # Add conversation history
-    for msg in history[-8:]:
-        role = msg.get("role", "user")
-        content = str(msg.get("content", ""))[:500]
-        if role in ("user", "assistant"):
-            messages.append({"role": role, "content": content})
-
-    messages.append({"role": "user", "content": message})
-
-    manager = get_manager()
+    orchestrator = ChatOrchestrator(get_manager(), session=session)
     start_time = time.time()
 
     try:
-        # Route to best model — dashboard chat uses research/heavy routing
-        task_type = classify_task(message, has_research_context=bool(session_context))
-        text = manager.generate_chat(messages, task_type=task_type)
-        text = sanitize_response(text)
+        outcome = orchestrator.handle(message, history)
+        text = sanitize_response(outcome.response)
         elapsed_ms = round((time.time() - start_time) * 1000)
         return jsonify({
             "response": text,
-            "model_used": manager.get_status()["active_provider"],
-            "task_type": task_type.value,
+            "model_used": get_status().get("active_provider", ""),
+            "task_type": outcome.task_type,
+            "route": outcome.route,
             "status": "success",
             "elapsed_ms": elapsed_ms,
+            "repaired": outcome.repaired,
+            "sources": outcome.sources[:6],
+            "calculations": [
+                {k: c.get(k) for k in ("metric", "value", "display", "formula",
+                                       "period", "status", "note")}
+                for c in outcome.calculations[:8]
+            ],
             "usage": {
                 "remaining": usage["remaining"],
                 "limit": usage["limit"],
@@ -1983,6 +1835,55 @@ def api_run_research():
         return jsonify({"status": "complete", "session_id": session_id, "dashboard": payload})
     except Exception as exc:
         return jsonify({"status": "error", "session_id": session_id, "error": str(exc)}), 500
+
+# ═════════════════════════════════════════════════════════════════════════════
+# INDIA — country-aware foundation (development fixtures; no live ingestion yet)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/india/demo/companies")
+def api_india_demo_companies():
+    """List available India fixture companies for demo dashboards."""
+    from lib.india.fixtures import FIXTURE_COMPANIES
+    return jsonify({
+        "companies": [
+            {
+                "slug": cfg["slug"],
+                "ticker": cfg["ticker"],
+                "name": cfg["name"],
+                "entity_type": cfg["entity_type"],
+                "is_fixture": True,
+            }
+            for cfg in FIXTURE_COMPANIES.values()
+        ],
+        "is_fixture": True,
+    })
+
+
+@app.get("/api/india/demo/dashboard/<slug>")
+def api_india_demo_dashboard(slug: str):
+    """Return the India dashboard payload built from development fixtures.
+
+    Development/demo functionality only — fixture data is clearly labeled and
+    never presented as live company research.
+    """
+    from lib.india.fixtures import get_fixture
+    from lib.india.dashboard_builder import build_india_dashboard
+    from lib.core.canonical_models import Scope
+
+    scope = (request.args.get("scope") or Scope.CONSOLIDATED.value).upper()
+    if scope not in (Scope.CONSOLIDATED.value, Scope.STANDALONE.value):
+        return jsonify({"error": "Invalid scope; use CONSOLIDATED or STANDALONE"}), 400
+    try:
+        data = get_fixture(slug)
+    except ValueError:
+        return jsonify({"error": f"Unknown India fixture '{slug}'"}), 404
+    try:
+        payload = build_india_dashboard(data, scope=scope)
+        return jsonify(payload)
+    except Exception as exc:
+        logger.error(f"INDIA_DASHBOARD_FAILED slug={slug} error={exc}")
+        return jsonify({"error": "Failed to build India dashboard."}), 500
+
 
 # -- Entrypoint ---------------------------------------------------------------
 if __name__ == '__main__':

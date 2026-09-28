@@ -6,7 +6,6 @@ import ResearchInput from "../components/ResearchInput";
 import Annotation from "../components/Annotation";
 import PaperTexture from "../components/PaperTexture";
 import ResearchProcessingPage from "./ResearchProcessingPage";
-import { getToken } from "../lib/auth";
 
 export default function ResearchPage() {
   const [params] = useSearchParams();
@@ -17,10 +16,7 @@ export default function ResearchPage() {
   const [exhausted, setExhausted] = useState(false);
 
   useEffect(() => {
-    const token = getToken();
-    if (!token) return;
-
-    fetch("/api/auth/profile", { headers: { Authorization: `Bearer ${token}` } })
+    fetch("/api/auth/profile")
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.usage) {

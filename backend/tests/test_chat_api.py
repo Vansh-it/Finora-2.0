@@ -2,7 +2,7 @@
 
 Covers: normal chat, empty message, malformed JSON, provider success,
 primary failure + fallback success, all providers fail, long message.
-Auth is mocked since /api/chat now requires authentication.
+Auth is not required — unauthenticated requests fall back to the guest user.
 """
 
 from __future__ import annotations
@@ -42,7 +42,8 @@ def _auth_headers():
 def _mock_generate(return_value: str = "Hello! I'm Finora."):
     """Patch manager.generate_chat to return a fixed string."""
     mock_manager = MagicMock()
-    mock_manager.generate_chat.return_value = return_value
+    # Chat Intelligence Engine: orchestrator calls generate_chat_with_meta
+    mock_manager.generate_chat_with_meta.return_value = (return_value, "stop")
     mock_manager.get_status.return_value = {
         "active_provider": "openai_oss",
         "providers": [{"name": "openai_oss", "available": True}],
@@ -53,7 +54,7 @@ def _mock_generate(return_value: str = "Hello! I'm Finora."):
 def _mock_generate_error(error_msg: str = "All providers exhausted"):
     """Patch manager.generate_chat to raise RuntimeError."""
     mock_manager = MagicMock()
-    mock_manager.generate_chat.side_effect = RuntimeError(error_msg)
+    mock_manager.generate_chat_with_meta.side_effect = RuntimeError(error_msg)
     mock_manager.get_status.return_value = {
         "active_provider": "none",
         "providers": [{"name": "openai_oss", "available": False}],
@@ -174,17 +175,18 @@ class TestValidation:
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-class TestAuth:
-    def test_13_no_auth_returns_401(self, client):
-        """Request without Authorization header returns 401."""
-        resp = client.post(
-            "/api/chat",
-            json={"message": "Hello"},
-            content_type="application/json",
-        )
-        assert resp.status_code == 401
+class TestGuestAccess:
+    def test_13_no_auth_falls_back_to_guest(self, client):
+        """Request without Authorization header is allowed and uses the guest user."""
+        with _mock_generate("Hello! I'm Finora."):
+            resp = client.post(
+                "/api/chat",
+                json={"message": "Hello"},
+                content_type="application/json",
+            )
+        assert resp.status_code == 200
         data = resp.get_json()
-        assert "error" in data
+        assert data["response"] == "Hello! I'm Finora."
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -209,7 +211,7 @@ class TestProviderBehavior:
     def test_09_primary_provider_failure_fallback_succeeds(self, client):
         """When primary fails, failover succeeds."""
         mock_manager = MagicMock()
-        mock_manager.generate_chat.return_value = "Fallback response."
+        mock_manager.generate_chat_with_meta.return_value = ("Fallback response.", "stop")
         mock_manager.get_status.return_value = {
             "active_provider": "nvidia_nemotron",
             "providers": [

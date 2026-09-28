@@ -170,13 +170,26 @@ class Company:
 
     sector: str = ""
 
+    # ISO-3166 alpha-2 country of the registrant. Drives region dispatch in
+    # lib.core.regions. Defaults to US because the resolver's universe is the
+    # SEC ticker file, whose every record is a US registrant by construction.
+    country: str = "US"
+
     # Resolution provenance
 
     confidence: float = 1.0
 
     method: str = "exact"
 
+    @property
 
+    def region(self):
+
+        """Region pipeline for this company (see :mod:`lib.core.regions`)."""
+
+        from lib.core.regions import region_for_company
+
+        return region_for_company(self)
 
     def to_dict(self) -> dict[str, Any]:
 
@@ -198,11 +211,33 @@ class Company:
 
             "sector": self.sector,
 
+            "country": self.country,
+
+            "region": self.region.value,
+
             "confidence": self.confidence,
 
             "method": self.method,
 
         }
+
+    @classmethod
+
+    def from_dict(cls, payload: dict[str, Any]) -> "Company":
+
+        """Rebuild from :meth:`to_dict`, ignoring derived keys.
+
+        ``to_dict`` carries ``region`` for API consumers, but ``region`` is a
+        property rather than a field, so ``Company(**payload)`` would raise.
+        Reconstructing from the declared fields keeps the cache round-trip
+        safe as the dataclass gains keys.
+        """
+
+        import dataclasses
+
+        names = {f.name for f in dataclasses.fields(cls)}
+
+        return cls(**{k: v for k, v in payload.items() if k in names})
 
 
 
@@ -1252,6 +1287,10 @@ class _FuzzyIndex:
 
     name_record_indices: list[int] = field(default_factory=list)    # name → record
 
+    short_names: list[str] = field(default_factory=list)  # leading distinctive token
+
+    short_name_record_indices: list[int] = field(default_factory=list)
+
 
 
 
@@ -1314,9 +1353,23 @@ def _build_fuzzy_index(records: list[dict]) -> _FuzzyIndex:
 
         if name:
 
-            idx.names.append(_normalize_compare(name))
+            normalized = _normalize_compare(name)
+
+            idx.names.append(normalized)
 
             idx.name_record_indices.append(i)
+
+            # Users type the distinctive leading token ("palantir"), not the
+            # full legal name. Indexing the token as well lets a short typo
+            # score against a name that would otherwise dilute it to noise.
+
+            head = normalized.split(" ", 1)[0]
+
+            if head and head != normalized:
+
+                idx.short_names.append(head)
+
+                idx.short_name_record_indices.append(i)
 
     return idx
 
@@ -1366,16 +1419,64 @@ def _fuzzy_score(a: str, b: str) -> float:
 
 
 
+def _scorer(query: str, choice: str, **kwargs) -> float:
+
+    """rapidfuzz-compatible wrapper around :func:`_fuzzy_score`.
+
+    ``rapidfuzz.process.extract`` calls the scorer with
+    ``score_cutoff=<float>`` and discards anything at or below it, so a scorer
+    that does not accept the keyword raises ``TypeError``. Returning 0 below
+    the cutoff is what makes ``extract`` apply the cutoff, rather than
+    pre-filtering here and disagreeing with it about the boundary.
+    """
+
+    score = _fuzzy_score(query, choice)
+
+    cutoff = kwargs.get("score_cutoff")
+
+    if cutoff is not None and score < float(cutoff):
+
+        return 0.0
+
+    return score
+
+
+# A leading-token index lets "palantir" match "palantir technologies inc",
+# but a 1-3 character token is mostly noise: WRatio against "tel" scores 90
+# for "palanteer" because the short ratio component saturates. Requiring some
+# substance keeps the index useful for distinctive words without letting
+# three-letter tokens outrank the real match.
+
+_MIN_SHORT_NAME_LEN = 5
+
+# Lowest fuzzy score at which a candidate is worth offering to the user as a
+# possible match. Matches below this are noise from short-string ratios, and
+# the fastest auto-accept path already requires 78, so offering a weaker
+# candidate list only ever asks the user to choose between non-matches.
+
+_PLAUSIBLE_CANDIDATE_FLOOR = 78
+
+
+def _min_length(extracted, min_len: int):
+
+    """Drop fuzzy hits whose matched text is too short to be meaningful."""
+
+    return [row for row in extracted if len(row[0]) >= min_len]
+
+
 def _fuzzy_extract(query: str, choices: list[str], limit: int = 8):
 
-    """Return list of (choice, score, index) sorted desc by score."""
+    """Return list of (choice, score, index) sorted desc by score.
+
+    Scores with :func:`_fuzzy_score` so that candidate ranking and any later
+    scoring use one definition. Ranking with a narrower scorer than the one
+    used to decide the match is what lets a good candidate never surface.
+    """
 
     if _HAS_RAPIDFUZZ:
 
         extracted = _rf_process.extract(
-
-            query, choices, scorer=_rf_fuzz.WRatio, limit=limit
-
+            query, choices, scorer=_scorer, limit=limit
         )
 
         return extracted  # list of (choice, score, index)
@@ -1568,7 +1669,7 @@ class CompanyUniverse:
 
         if cached is not None:
 
-            company = Company(**cached["company"])
+            company = Company.from_dict(cached["company"])
 
             company.confidence = cached.get("confidence", 1.0)
 
@@ -1746,55 +1847,60 @@ class CompanyUniverse:
 
         top = _fuzzy_extract(target_fuzzy, fuzzy_idx.names, limit)
 
+        # Also try the leading token of each name, so a short typo scores
+        # against "palantir" rather than "palantir technologies inc".
+
+        sh_top = _min_length(
+            _fuzzy_extract(target_fuzzy, fuzzy_idx.short_names, limit),
+            _MIN_SHORT_NAME_LEN,
+        )
+
         # Also try tickers (high-confidence for short queries)
 
         tk_top = _fuzzy_extract(target_fuzzy, fuzzy_idx.tickers, limit // 2)
 
         all_cands: list[dict] = []
 
-        seen_ids = set()
+        # record identity -> position in all_cands, so a record matched by more
+        # than one form keeps its best score instead of being dropped.
+
+        seen_ids: dict[object, int] = {}
 
         # Merge results, mapping indices back to records
 
-        for choice, score, choice_idx in top:
+        def _merge(extracted, record_indices):
 
-            rec_idx = fuzzy_idx.name_record_indices[choice_idx] if choice_idx < len(fuzzy_idx.name_record_indices) else -1
+            for choice, score, choice_idx in extracted:
 
-            if rec_idx < 0 or rec_idx >= len(records):
+                rec_idx = record_indices[choice_idx] if choice_idx < len(record_indices) else -1
 
-                continue
+                if rec_idx < 0 or rec_idx >= len(records):
 
-            rec = records[rec_idx]
+                    continue
 
-            rid = rec.get("cik") or rec.get("ticker")
+                rec = records[rec_idx]
 
-            if rid in seen_ids:
+                rid = rec.get("cik") or rec.get("ticker")
 
-                continue
+                if rid in seen_ids:
 
-            seen_ids.add(rid)
+                    slot = seen_ids[rid]
 
-            all_cands.append({"record": rec, "score": score})
+                    if score > all_cands[slot]["score"]:
 
-        for choice, score, choice_idx in tk_top:
+                        all_cands[slot]["score"] = score
 
-            rec_idx = fuzzy_idx.ticker_record_indices[choice_idx] if choice_idx < len(fuzzy_idx.ticker_record_indices) else -1
+                    continue
 
-            if rec_idx < 0 or rec_idx >= len(records):
+                seen_ids[rid] = len(all_cands)
 
-                continue
+                all_cands.append({"record": rec, "score": score})
 
-            rec = records[rec_idx]
+        _merge(top, fuzzy_idx.name_record_indices)
 
-            rid = rec.get("cik") or rec.get("ticker")
+        _merge(sh_top, fuzzy_idx.short_name_record_indices)
 
-            if rid in seen_ids:
-
-                continue
-
-            seen_ids.add(rid)
-
-            all_cands.append({"record": rec, "score": score})
+        _merge(tk_top, fuzzy_idx.ticker_record_indices)
 
         all_cands.sort(key=lambda c: c["score"], reverse=True)
 
@@ -1870,11 +1976,17 @@ class CompanyUniverse:
 
                                         method="fuzzy", t0=t0, cache_key=cache_key)
 
-                # Otherwise present candidates for user confirmation
+                # Ambiguity means "several plausible companies", so at least one
+                # candidate has to clear the floor we would accept on its own.
+                # A long nonsense string peaks in the low 70s with a flat
+                # profile; offering that list is not a choice, it is a dead end,
+                # so fall through to the unresolvable path instead.
 
-                cands = self._candidate_dicts([c["record"] for c in all_cands[:4]])
+                if best_score >= _PLAUSIBLE_CANDIDATE_FLOOR:
 
-                raise AmbiguousCompanyError(cands, q_raw)
+                    cands = self._candidate_dicts([c["record"] for c in all_cands[:4]])
+
+                    raise AmbiguousCompanyError(cands, q_raw)
 
 
 
@@ -1945,6 +2057,12 @@ class CompanyUniverse:
             cik=_cik_to_str(rec.get("cik", "")),
 
             exchange=rec.get("exchange", ""),
+
+            # Absent from the SEC ticker file, which is US-only by
+
+            # construction; keep the US default explicit rather than guessing.
+
+            country=(rec.get("country") or "US").upper(),
 
             status="resolved",
 

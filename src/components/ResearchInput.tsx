@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback, type FormEvent } from "react"
 import { ArrowRight, AlertCircle, Search, Building2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import TickerChip from "./TickerChip";
-import { isAuthenticated } from "../lib/auth";
 
 const QUICK_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"];
 
@@ -23,8 +22,8 @@ export default function ResearchInput() {
   const [isLoading, setIsLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -83,10 +82,6 @@ export default function ResearchInput() {
     const query = tickerOverride || value.trim();
     if (!query) {
       triggerError();
-      return;
-    }
-    if (!isAuthenticated()) {
-      navigate("/auth", { state: { from: "/research" } });
       return;
     }
     // If it looks like a ticker (1-5 uppercase letters), use as ticker
@@ -252,10 +247,6 @@ export default function ResearchInput() {
         <span className="mr-1 font-mono text-[10px] font-bold tracking-[0.2em] text-ink-3 uppercase">Try:</span>
         {QUICK_TICKERS.map((t) => (
           <TickerChip key={t} ticker={t} onClick={() => {
-            if (!isAuthenticated()) {
-              navigate("/auth", { state: { from: "/research" } });
-              return;
-            }
             navigate(`/research?ticker=${t}`);
           }} />
         ))}

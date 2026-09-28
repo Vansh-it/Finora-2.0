@@ -5,7 +5,7 @@ interface RedFlag {
   title: string;
   headline: string;
   reason: string;
-  severity: "low" | "medium" | "high" | "critical";
+  severity: string;
   tag: string;
   evidence?: Record<string, unknown>;
 }

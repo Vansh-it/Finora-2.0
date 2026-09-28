@@ -57,35 +57,35 @@ class TestProviderRegistration:
 
     def test_providers_registered(self):
         mgr = ProviderManager()
-        # Should have 3 providers (Lightning, MiniMax, Ultra)
+        # Should have 3 providers (NVIDIA + two OpenRouter fallbacks)
         assert len(mgr._providers) == 3
 
     def test_provider_names(self):
         mgr = ProviderManager()
         names = set(mgr._providers.keys())
-        assert "nvidia_nemotron_lightning" in names
+        assert "nvidia_nemotron" in names
+        assert "openrouter_nemotron" in names
         assert "openrouter_nemotron_ultra" in names
-        assert "openrouter_minimax_m3" in names
-        # DeepSeek and Kimi are removed (broken / unconfigured)
-        assert "nvidia_deepseek_flash" not in names
-        assert "nvidia_kimi_k3" not in names
+        # Deprecated/broken providers are removed
+        assert "nvidia_nemotron_lightning" not in names
+        assert "openrouter_minimax_m3" not in names
 
     def test_providers_have_correct_models(self):
         mgr = ProviderManager()
-        assert mgr._providers["nvidia_nemotron_lightning"].model == "nvidia/nemotron-3.5-lightning-30b-a3b"
+        assert mgr._providers["nvidia_nemotron"].model == "nvidia/nemotron-3-super-120b-a12b"
+        assert mgr._providers["openrouter_nemotron"].model == "nvidia/nemotron-3-super-120b-a12b:free"
         assert mgr._providers["openrouter_nemotron_ultra"].model == "nvidia/nemotron-3-ultra-550b-a55b:free"
-        assert mgr._providers["openrouter_minimax_m3"].model == "minimax/minimax-m3:free"
 
     def test_nvidia_providers_use_nvidia_base_url(self):
         mgr = ProviderManager()
         nvidia_base = "https://integrate.api.nvidia.com/v1"
-        assert mgr._providers["nvidia_nemotron_lightning"].base_url == nvidia_base
+        assert mgr._providers["nvidia_nemotron"].base_url == nvidia_base
 
     def test_openrouter_providers_use_openrouter_base_url(self):
         mgr = ProviderManager()
         openrouter_base = "https://openrouter.ai/api/v1"
+        assert mgr._providers["openrouter_nemotron"].base_url == openrouter_base
         assert mgr._providers["openrouter_nemotron_ultra"].base_url == openrouter_base
-        assert mgr._providers["openrouter_minimax_m3"].base_url == openrouter_base
 
 
 class TestTaskRouting:
@@ -103,8 +103,8 @@ class TestTaskRouting:
 
     def test_quick_chat_prefers_reliable_providers(self):
         quick_routing = TASK_ROUTING[TaskType.QUICK_CHAT]
-        # MiniMax M3 should be first (reliable ~3s)
-        assert quick_routing[0]["provider"] == "openrouter_minimax_m3"
+        # NVIDIA Nemotron (NIM) should be first (reliable ~3s, primary provider)
+        assert quick_routing[0]["provider"] == "nvidia_nemotron"
         assert quick_routing[0]["max_tokens"] <= 512
 
     def test_heavy_reasoning_prefers_powerful_providers(self):
@@ -177,15 +177,15 @@ class TestSelectProvidersForTask:
 
     def test_select_returns_available_providers(self):
         mgr = ProviderManager()
-        mgr._providers["nvidia_nemotron_lightning"].mark_rate_limited()
+        mgr._providers["nvidia_nemotron"].mark_rate_limited()
         candidates = mgr._select_providers_for_task(TaskType.QUICK_CHAT)
         provider_names = [c[0].name for c in candidates]
-        assert "nvidia_nemotron_lightning" not in provider_names
+        assert "nvidia_nemotron" not in provider_names
         assert len(candidates) >= 1
 
     def test_select_falls_back_when_primary_down(self):
         mgr = ProviderManager()
-        mgr._providers["nvidia_nemotron_lightning"].mark_rate_limited()
+        mgr._providers["nvidia_nemotron"].mark_rate_limited()
         candidates = mgr._select_providers_for_task(TaskType.QUICK_CHAT)
         assert len(candidates) >= 1
 
