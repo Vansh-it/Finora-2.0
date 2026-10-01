@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useState } from "react";
-import { useParams, Link } from "react-router-dom";
-import { Loader2 } from "lucide-react";
-import { getIndiaDemoDashboard } from "../lib/indiaApi";
+import { useParams, useLocation, useNavigate, Link } from "react-router-dom";
+import { Loader2, ArrowLeft } from "lucide-react";
+import { researchIndia } from "../lib/indiaApi";
 import type {
   IndiaDashboardPayload,
   IndiaRedFlag,
@@ -48,35 +48,68 @@ const UNIT_LABEL = "INR, except per-share";
 
 export default function IndiaDashboardPage() {
   const { entity = "corporate" } = useParams<{ entity: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [query, setQuery] = useState<string>("");
   const [payload, setPayload] = useState<IndiaDashboardPayload | null>(null);
   const [scope, setScope] = useState("CONSOLIDATED");
   const [tab, setTab] = useState("OVERVIEW");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inspect, setInspect] = useState<InspectTarget | null>(null);
 
+  // The research flow already ran the India pipeline to get here, so its
+  // payload is handed over directly rather than paying for the same run twice.
+  // A refresh has no such payload and falls back to researching from ?query=.
+  const handover = (location.state as { indiaPayload?: IndiaDashboardPayload } | null)
+    ?.indiaPayload ?? null;
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get("query");
+    if (q) setQuery(q);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
+    if (handover) {
+      setPayload(handover);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    if (!query) {
+      setLoading(false);
+      setPayload(null);
+      return;
+    }
     setLoading(true);
     setError(null);
     setPayload(null);
-    getIndiaDemoDashboard(entity, scope)
+    researchIndia(query)
       .then((p) => {
         if (!cancelled) {
-          setPayload(p);
+          if (p.status === "error" || !p.usable) {
+            setError(p.message || "India research returned no data");
+            setPayload(null);
+          } else if (p.dashboard) {
+            setPayload(p.dashboard);
+          } else {
+            setError("No dashboard data in research result");
+          }
           setLoading(false);
         }
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load India demo dashboard");
+          setError(err instanceof Error ? err.message : "Failed to load India dashboard");
           setLoading(false);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [entity, scope]);
+  }, [query, handover]);
 
   const tabs = TABS_BY_ENTITY[payload?.entity_type ?? "CORPORATE"] ?? TABS_BY_ENTITY.CORPORATE;
 
@@ -119,7 +152,7 @@ export default function IndiaDashboardPage() {
       <div className="mx-auto flex min-h-[60vh] max-w-3xl items-center justify-center px-4">
         <div className="text-center">
           <Loader2 size={32} className="mx-auto animate-spin text-ink-3" />
-          <p className="mt-4 font-mono text-sm text-ink-3">Loading India dashboard…</p>
+          <p className="mt-4 font-mono text-sm text-ink-3">Researching India company…</p>
         </div>
       </div>
     );
@@ -129,15 +162,41 @@ export default function IndiaDashboardPage() {
     return (
       <div className="mx-auto max-w-3xl px-4 py-20 text-center">
         <EditorialHeading size="md">
-          <HighlightText>Could not load the India demo dashboard.</HighlightText>
+          <HighlightText>{error}</HighlightText>
         </EditorialHeading>
-        <p className="mt-4 text-sm text-ink-2">{error}</p>
-        <Link
-          to="/"
-          className="mt-6 inline-block border-2 border-ink bg-paper px-6 py-3 font-mono text-xs font-bold tracking-wider uppercase transition-colors hover:bg-ink hover:text-paper"
-        >
-          Back to Home
-        </Link>
+        <div className="mt-6 flex flex-col items-center gap-3">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search Indian company — e.g. Reliance, HDFC Bank, Bajaj Finance"
+            className="w-full max-w-md bg-paper border-2 border-ink px-4 py-3 font-mono text-sm text-ink placeholder:text-ink-3 focus:outline-none"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && query.trim()) {
+                window.location.search = `?query=${encodeURIComponent(query.trim())}`;
+                window.location.reload();
+              }
+            }}
+            aria-label="Search Indian company"
+          />
+          <button
+            onClick={() => {
+              if (query.trim()) {
+                window.location.search = `?query=${encodeURIComponent(query.trim())}`;
+                window.location.reload();
+              }
+            }}
+            className="border-2 border-ink bg-ink px-6 py-3 font-mono text-xs font-bold tracking-wider text-paper uppercase transition-colors hover:bg-ink-2"
+          >
+            Research
+          </button>
+          <Link
+            to="/"
+            className="mt-2 inline-block border-2 border-ink/25 bg-paper px-6 py-3 font-mono text-xs font-bold tracking-wider text-ink uppercase transition-colors hover:border-ink"
+          >
+            Back to Home
+          </Link>
+        </div>
       </div>
     );
   }
@@ -148,6 +207,19 @@ export default function IndiaDashboardPage() {
     <div className="mx-auto max-w-[1440px] px-4 py-10 sm:px-6 lg:px-10">
       <div className="mb-6">
         <FixtureBanner />
+      </div>
+
+      <div className="mb-6 flex items-center gap-3">
+        <a
+          href="/"
+          className="inline-flex items-center gap-1 border-2 border-ink/25 bg-paper px-3 py-2 font-mono text-xs text-ink uppercase transition-colors hover:border-ink"
+        >
+          <ArrowLeft size={14} />
+          Back to Home
+        </a>
+        <span className="font-mono text-[10px] text-ink-3 uppercase tracking-wider">
+          India Dashboard · {payload.entity_type}
+        </span>
       </div>
 
       <IndiaCompanyHeader header={payload.header} />

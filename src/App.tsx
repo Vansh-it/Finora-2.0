@@ -31,6 +31,9 @@ export default function App() {
               <Route path="/privacy" element={<PrivacyPage />} />
               <Route path="/research" element={<ResearchPage />} />
               <Route path="/dashboard" element={<DashboardPage />} />
+              {/* India research dashboard — the destination for a company the
+                  backend routed to the India pipeline. */}
+              <Route path="/dashboard/india" element={<IndiaDashboardPage />} />
               {/* India demo dashboards — development fixture data, clearly labeled */}
               <Route path="/dashboard/demo/india" element={<IndiaDemoIndexPage />} />
               <Route path="/dashboard/demo/india/:entity" element={<IndiaDashboardPage />} />

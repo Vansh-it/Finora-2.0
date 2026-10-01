@@ -5,29 +5,43 @@ import EditorialHeading from "../components/EditorialHeading";
 import Annotation from "../components/Annotation";
 import { cn } from "../utils/cn";
 import { runResearch } from "../lib/api";
-
-const STAGES = [
-  { key: "company", title: "Entity Identified", detail: "Resolved company name to CIK and primary exchange listing." },
-  { key: "filings", title: "SEC Filings Located", detail: "Located most recent 10-K, 10-Q and 8-K filings via EDGAR." },
-  { key: "financials", title: "Financial Statements", detail: "Extracting income statement, balance sheet & cash flow from XBRL." },
-  { key: "metrics", title: "Metrics Calculated", detail: "Deriving profitability, growth, efficiency and valuation metrics." },
-  { key: "sources", title: "Sources Discovered", detail: "Searching for authoritative company financial sources." },
-  { key: "verify", title: "Source Verification", detail: "Cross-checking figures against external sources." },
-  { key: "summary", title: "Analysis Generated", detail: "Generating the executive research memo." },
-  { key: "valuation", title: "Valuation Complete", detail: "Fetching market data and calculating valuation multiples." },
-  { key: "complete", title: "Research File Complete", detail: "Assembling the final research record." },
-];
+import { researchIndia } from "../lib/indiaApi";
+import { resolveRegion, type RegionRoute } from "../lib/regionRouter";
+import {
+  exchangeLabelForRegion,
+  identifierForRoute,
+  nameForRoute,
+  stagesForRegion,
+  type ResearchStage,
+} from "../lib/researchStages";
 
 type StageStatus = "pending" | "active" | "done" | "error";
 
+/**
+ * The region route is the only thing that decides which pipeline runs. Until it
+ * answers, the screen shows no market-specific wording at all: naming NASDAQ,
+ * EDGAR or 10-K before the company is known is exactly the wrong claim to make
+ * about an Indian company.
+ */
+const PENDING_STAGES: ResearchStage[] = [
+  {
+    key: "routing",
+    title: "Resolving Company",
+    detail: "Locating the company on its listing exchange to select the right research pipeline.",
+  },
+];
+
 export default function ResearchProcessingPage() {
   const [params] = useSearchParams();
-  const ticker = (params.get("ticker") || "AAPL").toUpperCase();
+  const query = (params.get("ticker") || params.get("query") || "AAPL").trim();
   const navigate = useNavigate();
-  const [stageStatuses, setStageStatuses] = useState<StageStatus[]>(
-    () => STAGES.map(() => "pending" as StageStatus)
+  const [stages, setStages] = useState<ResearchStage[]>(PENDING_STAGES);
+  const [stageStatuses, setStageStatuses] = useState<StageStatus[]>(() =>
+    PENDING_STAGES.map(() => "pending" as StageStatus)
   );
+  const [route, setRoute] = useState<RegionRoute | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [routing, setRouting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const startedRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -39,45 +53,96 @@ export default function ResearchProcessingPage() {
     // Start elapsed timer
     timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
 
+    function applyStages(next: ResearchStage[]) {
+      setStages(next);
+      setStageStatuses(next.map(() => "pending" as StageStatus));
+    }
+
+    function updateStage(index: number, status: StageStatus) {
+      setStageStatuses((prev) => {
+        const next = [...prev];
+        next[index] = status;
+        return next;
+      });
+    }
+
+    function markActiveFailed() {
+      setStageStatuses((prev) => {
+        const next = [...prev];
+        const idx = next.findIndex((s) => s === "active");
+        if (idx >= 0) next[idx] = "error";
+        return next;
+      });
+    }
+
     async function run() {
       try {
-        // Animate stages as the pipeline runs
-        // Stage 0: immediately show as active
         updateStage(0, "active");
+        setRouting(true);
 
-        const result = await runResearch(ticker, "latest");
-
-        // Stop timer
-        if (timerRef.current) clearInterval(timerRef.current);
-
-        if (result.status === "error") {
-          setErrorMsg(result.error || "Research pipeline failed");
-          // Mark current stage as error
-          setStageStatuses((prev) => {
-            const idx = prev.findIndex((s) => s === "active");
-            if (idx >= 0) prev[idx] = "error";
-            return [...prev];
-          });
-          return;
+        // 1. Region dispatch. No filings are fetched until the query is placed
+        //    on an exchange, so an Indian company cannot reach SEC/EDGAR.
+        let resolved: RegionRoute;
+        try {
+          resolved = await resolveRegion(query);
+        } finally {
+          setRouting(false);
         }
+        setRoute(resolved);
+        applyStages(stagesForRegion(resolved.region as "US" | "INDIA"));
 
-        // Mark all stages as done
-        setStageStatuses(STAGES.map(() => "done" as StageStatus));
-
-        // Navigate to dashboard after short delay
-        setTimeout(() => {
-          navigate(`/dashboard?session_id=${result.session_id}`);
-        }, 800);
+        if (resolved.region === "INDIA") {
+          await runIndia(resolved);
+        } else {
+          await runUs(resolved);
+        }
       } catch (err) {
         if (timerRef.current) clearInterval(timerRef.current);
         const msg = err instanceof Error ? err.message : "Could not connect to the Finora backend.";
         setErrorMsg(msg);
-        setStageStatuses((prev) => {
-          const idx = prev.findIndex((s) => s === "active");
-          if (idx >= 0) prev[idx] = "error";
-          return [...prev];
-        });
+        markActiveFailed();
       }
+    }
+
+    async function runIndia(resolved: RegionRoute) {
+      // Entity placement is already done; the rest narrates the India pipeline.
+      updateStage(0, "done");
+      updateStage(1, "active");
+      const result = await researchIndia(resolved.query);
+
+      if (timerRef.current) clearInterval(timerRef.current);
+
+      if (result.status === "error" || !result.usable || !result.dashboard) {
+        setErrorMsg(result.message || "India research returned no usable data.");
+        markActiveFailed();
+        return;
+      }
+
+      setStageStatuses((prev) => prev.map(() => "done" as StageStatus));
+      setTimeout(() => {
+        navigate(
+          `/dashboard/india?query=${encodeURIComponent(resolved.query)}`,
+          { state: { indiaPayload: result.dashboard } }
+        );
+      }, 800);
+    }
+
+    async function runUs(resolved: RegionRoute) {
+      const result = await runResearch(resolved.query, "latest");
+
+      if (timerRef.current) clearInterval(timerRef.current);
+
+      if (result.status === "error") {
+        setErrorMsg(result.error || "Research pipeline failed");
+        markActiveFailed();
+        return;
+      }
+
+      setStageStatuses((prev) => prev.map(() => "done" as StageStatus));
+
+      setTimeout(() => {
+        navigate(`/dashboard?session_id=${result.session_id}`);
+      }, 800);
     }
 
     run();
@@ -85,15 +150,11 @@ export default function ResearchProcessingPage() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [ticker, navigate]);
+  }, [query, navigate]);
 
-  function updateStage(index: number, status: StageStatus) {
-    setStageStatuses((prev) => {
-      const next = [...prev];
-      next[index] = status;
-      return next;
-    });
-  }
+  const label = route ? identifierForRoute(route) : query;
+  const exchange = route ? exchangeLabelForRegion(route) : "—";
+  const displayName = route ? nameForRoute(route, query) : query;
 
   return (
     <div className="mx-auto min-h-[80vh] max-w-3xl px-4 py-16 sm:px-6 lg:px-0">
@@ -108,11 +169,16 @@ export default function ResearchProcessingPage() {
 
       <div className="mt-8 flex items-center gap-4 border border-ink/20 bg-paper p-4">
         <div className="flex h-10 w-10 items-center justify-center border border-ink font-mono text-sm font-bold">
-          {ticker.slice(0, 2)}
+          {label.slice(0, 2)}
         </div>
         <div>
-          <div className="font-serif text-lg font-semibold text-ink uppercase">{ticker}</div>
-          <Annotation label="NASDAQ" value={ticker} />
+          <div className="font-serif text-lg font-semibold text-ink uppercase">
+            {displayName}
+          </div>
+          <Annotation
+            label={routing || !route ? "Resolving" : exchange}
+            value={label}
+          />
         </div>
         {elapsed > 0 && (
           <div className="ml-auto font-mono text-xs text-ink-3">{elapsed}s</div>
@@ -133,7 +199,7 @@ export default function ResearchProcessingPage() {
       )}
 
       <div className="mt-10 space-y-0">
-        {STAGES.map((stage, i) => {
+        {stages.map((stage, i) => {
           const status = stageStatuses[i];
           const done = status === "done";
           const active = status === "active";
@@ -141,7 +207,7 @@ export default function ResearchProcessingPage() {
 
           return (
             <div key={stage.key} className="relative flex gap-4 pb-8 last:pb-0">
-              {i < STAGES.length - 1 && (
+              {i < stages.length - 1 && (
                 <div className="absolute top-8 left-[15px] h-full w-px bg-ink/15">
                   <div
                     className={cn(

@@ -24,7 +24,12 @@ from lib.core.money import (
 )
 from lib.metrics.engine import MetricEngine
 from lib.metrics.completeness import CompletenessEngine, CompletenessResult
-from lib.india.models import IndiaDashboardSchema, schema_for, fixture_macro_strip
+from lib.india.models import (
+    IndiaDashboardSchema,
+    IndiaMacroStrip,
+    schema_for,
+    unavailable_macro_strip,
+)
 from lib.india.forensics import (
     DetectorStatus,
     earnings_quality_panel,
@@ -119,7 +124,11 @@ def _card(engine: MetricEngine, metric_id: str, period: str,
             formula=result.formula, inputs=list(result.inputs.keys()),
             source_ids=_ordered_sources(engine, metric_id, list(result.source_ids)))
     # Prefer a reported value recorded in data when engine calc is insufficient.
-    m = engine.data.metric(metric_id, period)
+    # The scope is passed so the card shows the basis the rest of the dashboard
+    # uses. Without it the lookup falls back to whichever basis happens to be
+    # present, and a card can silently show standalone figures next to
+    # consolidated ones.
+    m = engine.data.metric(metric_id, period, statement_scope=scope)
     if m and m.is_available:
         return MetricCardData(
             metric_id=metric_id, display_name=registry_metric.display_name,
@@ -215,9 +224,22 @@ def _ownership_payload(data: CanonicalCompanyData) -> dict[str, Any]:
             "available": bool(rows)}
 
 
-def build_india_dashboard(data: CanonicalCompanyData,
-                          scope: str = Scope.CONSOLIDATED.value) -> dict[str, Any]:
-    """Build the complete India dashboard payload for one entity."""
+def build_india_dashboard(
+    data: CanonicalCompanyData,
+    scope: str = Scope.CONSOLIDATED.value,
+    *,
+    macro: Optional[IndiaMacroStrip] = None,
+    is_fixture: bool = True,
+) -> dict[str, Any]:
+    """Build the complete India dashboard payload for one entity.
+
+    ``macro`` and ``is_fixture`` are injected rather than assumed, because a
+    dashboard that silently reports fixture India macro above live company
+    financials is worse than one with no macro at all: the reader cannot tell
+    which strip is real. The research path passes a live strip and
+    ``is_fixture=False``; when no macro source could be verified it passes
+    :func:`unavailable_macro_strip`, and the payload says so.
+    """
     entity = EntityType(data.identity.entity_type)
     schema = schema_for(entity)
     engine = MetricEngine(data)
@@ -251,7 +273,9 @@ def build_india_dashboard(data: CanonicalCompanyData,
         "market_cap": md.market_cap if md else None,
         "market_cap_display": _fmt(md.market_cap if md else None, "inr"),
         "market_data_status": md.data_status if md else "UNAVAILABLE",
-        "is_fixture": md.is_fixture if md else True,
+        # Absent market data is unavailable, not fixture: calling it a fixture
+        # would imply a real value was substituted somewhere.
+        "is_fixture": md.is_fixture if md else False,
         "price_date": md.price_date if md else "",
     }
 
@@ -308,11 +332,17 @@ def build_india_dashboard(data: CanonicalCompanyData,
     valuation = {
         "market_data": md.to_dict() if md else None,
         "metrics": valuation_metrics,
-        "fixture_warning": md.is_fixture if md else True,
+        "fixture_warning": md.is_fixture if md else False,
     }
 
     # ── Macro strip ──
-    macro = fixture_macro_strip().to_dict()
+    # Never a placeholder: an unverified source yields an explicitly
+    # unavailable strip, because macro is context and must never be mistaken
+    # for a researched figure.
+    macro_payload = (
+        macro.to_dict() if macro is not None
+        else unavailable_macro_strip("Macro was not requested for this dashboard").to_dict()
+    )
 
     # ── Sources ──
     sources = [s.to_dict() for s in data.sources.values()]
@@ -344,8 +374,11 @@ def build_india_dashboard(data: CanonicalCompanyData,
 
     return {
         "version": "india-1",
-        "is_fixture": True,
-        "fixture_notice": "Development fixture data — not live company research",
+        "is_fixture": is_fixture,
+        "fixture_notice": (
+            "Development fixture data — not live company research"
+            if is_fixture else ""
+        ),
         "entity_type": entity.value,
         "header": header,
         "periods": periods,
@@ -361,7 +394,7 @@ def build_india_dashboard(data: CanonicalCompanyData,
         "macro": macro,
         "sources": sources,
         "completeness": coverage_payload,
-        "research_context": _research_context(data, entity, completeness),
+        "research_context": _research_context(data, entity, completeness, scope),
     }
 
 
@@ -374,37 +407,61 @@ def _available_scopes(data: CanonicalCompanyData) -> list[str]:
 
 
 def _research_context(data: CanonicalCompanyData, entity: EntityType,
-                      completeness: CompletenessResult) -> dict[str, Any]:
+                      completeness: CompletenessResult,
+                      scope: str = Scope.CONSOLIDATED.value) -> dict[str, Any]:
     """Structured IndiaResearchContext for the existing chat intelligence.
 
     Raw values + metadata only — no UI-rendered strings.
+
+    Metrics recorded on a different reporting basis are left out rather than
+    folded in. A period with no figure on the requested basis is a real gap, and
+    the gap has to stay visible: mixing bases produces a trend in which every
+    point is individually correct and the line between them means nothing.
     """
     engine = MetricEngine(data)
     metrics: dict[str, Any] = {}
+    other_basis: dict[str, list[str]] = {}
     for p in data.period_labels():
         pmetrics: dict[str, Any] = {}
         for stmt in data.statements.values():
             for mid in {m.metric_id for m in stmt.metrics.values()}:
-                m = data.metric(mid, p)
-                if m and m.is_available:
+                m = data.metric(mid, p, statement_scope=scope)
+                if m and m.is_available and m.statement_scope == scope:
                     pmetrics[mid] = {
                         "value": m.value,
                         "status": m.status,
                         "source_ids": m.source_ids,
                         "statement_scope": m.statement_scope,
                     }
+                elif m and m.is_available:
+                    other_basis.setdefault(p, []).append(mid)
         metrics[p] = pmetrics
+    period_labels = data.period_labels()
+    latest = period_labels[-1] if period_labels else ""
+    if entity == EntityType.BANK:
+        detectors = run_bank_detectors
+    elif entity == EntityType.NBFC:
+        detectors = run_nbfc_detectors
+    else:
+        detectors = run_corporate_detectors
     return {
         "company": data.identity.to_dict(),
         "entity_type": entity.value,
-        "periods": data.period_labels(),
+        "scope": scope,
+        "periods": period_labels,
         "metrics": metrics,
+        "metrics_excluded_other_basis": {
+            period: sorted(set(mids)) for period, mids in sorted(other_basis.items())
+        },
         "ownership": [o.to_dict() for o in data.ownership],
         "forensics": {
+            # With no validated financial period there is nothing for a
+            # financial detector to evaluate. Ownership-only research is still
+            # legitimate, so this reports no flags rather than failing, and the
+            # coverage block below explains the gap.
             "active_flags": [
-                d.to_dict() for d in run_corporate_detectors(engine, data, data.period_labels()[-1])
-                if d.fired
-            ] if entity == EntityType.CORPORATE else [],
+                d.to_dict() for d in detectors(engine, data, latest) if d.fired
+            ] if latest else [],
         },
         "coverage": {
             "coverage_pct": completeness.coverage_pct,

@@ -53,9 +53,9 @@ REGIONS: dict[Region, RegionInfo] = {
 
 REGION_PIPELINES_AVAILABLE: dict[Region, bool] = {
     Region.US: True,
-    # India is a fixture-only foundation until the live adapter ships. Flip
-    # this when lib.india.adapter is real, and require_supported_region()
-    # starts routing Indian companies instead of refusing them.
+    # India production route is wired: backend /api/india/research -> IndiaAdapter.research.
+    # Keep FALSE until the full live-verification sequence passes (Reliance, Bajaj Finance,
+    # HDFC Bank OCR, unseen company, frontend Search->Dashboard, build/tests).
     Region.INDIA: False,
 }
 

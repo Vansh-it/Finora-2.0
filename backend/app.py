@@ -77,6 +77,10 @@ from lib.business_quant_client import is_available as bq_available  # noqa: E402
 from lib.response_sanitizer import sanitize_response  # noqa: E402
 from lib.ssrf_guard import safe_url_or_none  # noqa: E402
 from lib.company_resolver import get_universe, smart_resolve, suggest_companies, parse_research_query, AmbiguousCompanyError  # noqa: E402
+from lib.core.regions import (  # noqa: E402
+    require_supported_region, UnsupportedRegionError,
+)
+from lib.region_router import route_company_query  # noqa: E402
 # Chat Intelligence Engine
 from lib.chat.orchestrator import ChatOrchestrator  # noqa: E402
 from lib.chat.router import route_query  # noqa: E402
@@ -1573,6 +1577,37 @@ def key_status():
     return jsonify(get_status())
 
 
+# ── Region dispatch endpoint ──────────────────────────────────────────────────
+@app.post("/api/research/route")
+def api_research_route():
+    """Resolve a company query to its region pipeline, before any research runs.
+
+    The frontend calls this first so a company is researched by the pipeline
+    that serves its exchange. An Indian company resolved here never reaches the
+    SEC pipeline; a US company keeps the pipeline it always used.
+
+    A query that cannot be placed returns 409 with an explicit reason. It is
+    never answered with a default region, because the failure mode of guessing
+    is a confident report on the wrong company.
+    """
+    body = request.get_json(silent=True) or {}
+    query = body.get("query") or body.get("company") or ""
+    if not isinstance(query, str) or not query.strip():
+        return jsonify({"error": "Missing or invalid 'query' field"}), 400
+
+    route = route_company_query(query)
+    payload = route.to_dict()
+
+    if not route.routed:
+        # 409: the query resolved nowhere Finora researches, or resolved to more
+        # than one company. Both are refusals the user must act on, not failures
+        # to retry.
+        payload["error"] = route.message
+        return jsonify(payload), 409
+
+    return jsonify(payload)
+
+
 # ── Full research pipeline endpoint (single call) ──────────────────────────────
 @app.post("/api/research/run")
 def api_run_research():
@@ -1621,6 +1656,12 @@ def api_run_research():
             # Step 1: Resolve company
             update_session_status(session_id, "resolving_company")
             company_meta = resolve_company(session.company)
+            # Region gate. Everything below this line is the US/SEC pipeline, so
+            # a company that is not a US registrant is refused here rather than
+            # searched for on EDGAR. Without it an Indian company reaches the
+            # filing retriever and fails much later with an EDGAR error that
+            # says nothing about the real cause.
+            require_supported_region(company_meta)
             # Enrich with FMP profile (description, industry, sector) — best-effort
             try:
                 if fmp_available():
@@ -1818,12 +1859,29 @@ def api_run_research():
             update_session_status(session_id, "ready_for_dashboard")
             stages_done.append("complete")
 
+        except UnsupportedRegionError as exc:
+            # A resolved company Finora has no pipeline for. Reported distinctly
+            # from a pipeline failure so the caller can route rather than retry.
+            logger.warning(
+                f"REGION_REFUSED session_id={session_id[:12]}... error={exc}"
+            )
+            set_session_error(session_id, str(exc))
+            stages_done.append("region_unsupported")
         except Exception as exc:
             logger.error(f"PIPELINE_FAILED session_id={session_id[:12]}... error={exc}")
             set_session_error(session_id, str(exc))
             stages_done.append("error")
 
     _run()
+
+    if "region_unsupported" in stages_done:
+        session_obj = get_session(session_id)
+        return jsonify({
+            "status": "error",
+            "session_id": session_id,
+            "region_refused": True,
+            "error": session_obj.error if session_obj else "Region not supported",
+        }), 501
 
     # Return the final result
     if "error" in stages_done:
@@ -1835,6 +1893,58 @@ def api_run_research():
         return jsonify({"status": "complete", "session_id": session_id, "dashboard": payload})
     except Exception as exc:
         return jsonify({"status": "error", "session_id": session_id, "error": str(exc)}), 500
+
+# ═════════════════════════════════════════════════════════════════════════════
+# INDIA — production research route
+# ═════════════════════════════════════════════════════════════════════════════
+
+from lib.india.adapter import IndiaAdapter
+
+@app.post("/api/india/research")
+def api_india_research():
+    """Run real India research for a company query.
+
+    company query → resolve → IndiaAdapter.research → IndiaResearchResult
+    → serializable API response.
+    """
+    body = request.get_json(silent=True) or {}
+    query = body.get("query", "").strip()
+
+    if not query:
+        return jsonify({"error": "Missing 'query' field"}), 400
+
+    user, auth_err = _get_auth_user()
+    if auth_err:
+        return auth_err
+
+    quota = can_use_research(user.user_id)
+    if not quota["allowed"]:
+        return jsonify({
+            "error": "Research quota exhausted.",
+            "quota_exhausted": True,
+            "remaining": 0,
+            "limit": quota["limit"],
+        }), 429
+
+    try:
+        adapter = IndiaAdapter()
+        result = adapter.research(query)
+    except Exception as exc:
+        logger.error(f"INDIA_RESEARCH_FAILED query={query!r} error={exc}")
+        return jsonify({
+            "error": f"India research failed: {exc}",
+            "status": "error",
+        }), 500
+
+    # Charged only on a run that produced something, so a failed resolution does
+    # not cost the user one of their five. Mirrors the US pipeline, which
+    # increments inside its run rather than at request time.
+    if result.usable and user.user_id:
+        increment_research_runs(user.user_id)
+
+    payload = result.to_dict()
+    return jsonify(payload)
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # INDIA — country-aware foundation (development fixtures; no live ingestion yet)

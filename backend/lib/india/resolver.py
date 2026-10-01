@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 logger = logging.getLogger("finora.india.resolver")
 
@@ -632,6 +632,14 @@ class IndiaCompany:
     aliases: list[str] = field(default_factory=list)
     confidence: float = 1.0
     method: str = "exact"
+    # -- Phase-2 additions. All default to empty/None so existing Phase-1
+    # construction sites and fixture data keep working unchanged.
+    listing_date: str = ""
+    resolution_confidence: float = 0.0
+    resolution_method: str = ""
+    #: Names of fields backfilled from the seed identity table rather than a
+    #: live source. Empty means every field came from a live official source.
+    seed_fields: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -652,6 +660,10 @@ class IndiaCompany:
             "aliases": list(self.aliases),
             "confidence": self.confidence,
             "method": self.method,
+            "listing_date": self.listing_date,
+            "resolution_confidence": self.resolution_confidence or self.confidence,
+            "resolution_method": self.resolution_method or self.method,
+            "seed_fields": list(self.seed_fields),
         }
 
     @classmethod
@@ -679,19 +691,34 @@ class IndiaCompany:
 
 @dataclass
 class IndiaResolutionResult:
-    company: IndiaCompany
+    # Optional: an AMBIGUOUS result carries candidates only, and picking one
+    # automatically is exactly what spec 7 forbids.
+    company: Optional[IndiaCompany] = None
     method: str = "exact"
     confidence: float = 1.0
     candidates: list[dict[str, Any]] = field(default_factory=list)
     message: str = ""
+    # Phase-2: RESOLVED or AMBIGUOUS. Defaults to RESOLVED so every Phase-1
+    # construction site keeps its old meaning.
+    status: str = "RESOLVED"
+    query: str = ""
+    # Where identity came from: LIVE_NSE_MASTER, SEED_FALLBACK, ...
+    source: str = "SEED"
+
+    @property
+    def is_ambiguous(self) -> bool:
+        return self.status == "AMBIGUOUS"
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "company": self.company.to_dict(),
+            "status": self.status,
+            "query": self.query,
+            "company": self.company.to_dict() if self.company else None,
             "method": self.method,
             "confidence": round(self.confidence, 4),
             "candidates": list(self.candidates),
             "message": self.message,
+            "source": self.source,
         }
 
 

@@ -19,34 +19,61 @@ from lib.core.entity_types import EntityType
 class IndiaMacroStrip:
     """India macro context for dashboards.
 
-    In this phase all values are fixture data (is_fixture=True).
+    A live strip is built from official sources and carries ``is_fixture``
+    false. When no source could be verified the strip is *unavailable* — an
+    empty item list with a reason — never a placeholder number, because a
+    plausible-looking yield that is not RBI's would be read as fact.
     """
 
     items: list[dict[str, Any]] = field(default_factory=list)
-    attribution: str = "Fixture data — India Adapter phase will connect official RBI/exchange sources"
-    is_fixture: bool = True
+    attribution: str = ""
+    is_fixture: bool = False
+    unavailable_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "available": bool(self.items),
             "is_fixture": self.is_fixture,
             "strip": list(self.items),
             "attribution": self.attribution,
         }
+        if not self.items:
+            payload["reason"] = self.unavailable_reason or (
+                "No official macro source available at the time of this run"
+            )
+        return payload
+
+
+def unavailable_macro_strip(reason: str) -> IndiaMacroStrip:
+    """A macro strip that states plainly that nothing was verified.
+
+    Macro must never block company research, so an absent source degrades to
+    this rather than raising or, worse, substituting an invented value.
+    """
+    return IndiaMacroStrip(
+        items=[],
+        attribution="",
+        is_fixture=False,
+        unavailable_reason=reason,
+    )
 
 
 def fixture_macro_strip() -> IndiaMacroStrip:
     """Development fixture macro values — explicitly labeled fixture."""
-    return IndiaMacroStrip(items=[
-        {"label": "RBI Policy Repo Rate", "value": "6.50%", "series_id": "FIXTURE_RBİ_REPO",
-         "date": "2026-09-01", "status": "FIXTURE"},
-        {"label": "India 10Y G-Sec Yield", "value": "6.92%", "series_id": "FIXTURE_IN10Y",
-         "date": "2026-09-01", "status": "FIXTURE"},
-        {"label": "India CPI Inflation", "value": "4.1%", "series_id": "FIXTURE_INCPI",
-         "date": "2026-08-01", "status": "FIXTURE"},
-        {"label": "USD/INR", "value": "₹83.9", "series_id": "FIXTURE_USDINR",
-         "date": "2026-09-01", "status": "FIXTURE"},
-    ])
+    return IndiaMacroStrip(
+        is_fixture=True,
+        attribution="Fixture data — not live RBI or exchange data",
+        items=[
+            {"label": "RBI Policy Repo Rate", "value": "6.50%",
+             "series_id": "FIXTURE_RBI_REPO", "date": "2026-09-01", "status": "FIXTURE"},
+            {"label": "India 10Y G-Sec Yield", "value": "6.92%",
+             "series_id": "FIXTURE_IN10Y", "date": "2026-09-01", "status": "FIXTURE"},
+            {"label": "India CPI Inflation", "value": "4.1%",
+             "series_id": "FIXTURE_INCPI", "date": "2026-08-01", "status": "FIXTURE"},
+            {"label": "USD/INR", "value": "₹83.9",
+             "series_id": "FIXTURE_USDINR", "date": "2026-09-01", "status": "FIXTURE"},
+        ],
+    )
 
 
 # Dashboard tabs per entity type (spec §39)

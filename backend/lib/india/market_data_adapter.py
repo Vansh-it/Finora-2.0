@@ -20,6 +20,8 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from lib.core.canonical_models import CanonicalMarketData
+
 logger = logging.getLogger("finora.india.market")
 
 # ---------------------------------------------------------------------------
@@ -82,12 +84,66 @@ class IndiaMarketSnapshot:
             "reason": self.reason,
         }
 
+    def to_canonical(self) -> Optional[CanonicalMarketData]:
+        """Convert to the canonical market model, or ``None`` if there is no price.
+
+        A snapshot without a price carries no information the dashboard can
+        show, so it is not represented as a canonical object with null fields —
+        that reads downstream as "price unknown" rather than "not retrieved",
+        and the two warrant different language to the user.
+        """
+        if self.price is None:
+            return None
+        return CanonicalMarketData(
+            price=self.price,
+            previous_close=self.previous_close,
+            price_date=self.price_date,
+            percent_change=self.percent_change,
+            market_cap=self.market_cap,
+            shares_outstanding=self.shares_outstanding,
+            currency=self.currency or "INR",
+            exchange=self.exchange,
+            source_id=f"market:{self.provider or self.source or 'unknown'}",
+            source_name=self.source or self.provider or "Market data",
+            data_status=self.freshness_status,
+            is_fixture=self.is_fixture,
+            reason=self.reason,
+        )
+
 
 def _empty_snapshot(reason: str = "No market data available") -> IndiaMarketSnapshot:
     return IndiaMarketSnapshot(
         reason=reason,
         freshness_status=MarketFreshness.UNKNOWN_FRESHNESS.value,
     )
+
+
+def _price_date(price_timestamp: Optional[str]) -> str:
+    """The calendar date the quoted price belongs to.
+
+    A price with no date cannot be placed on a timeline, compared against a
+    filing period, or aged against a freshness policy, and a dashboard that
+    shows one anyway is inviting the reader to treat it as current. The
+    provider does supply a quote timestamp; it was parsed and then dropped,
+    which is how a live price reached production undated.
+    """
+    if not price_timestamp:
+        return ""
+    return price_timestamp[:10]
+
+
+def _percent_change(
+    price: Optional[float], previous_close: Optional[float]
+) -> Optional[float]:
+    """Day change as a percentage of the previous close.
+
+    Returned as a fraction, not a percentage, because the canonical model
+    multiplies by 100 for display; pre-multiplying here showed "-2.32%" as
+    "-2.32% of itself" on the dashboard.
+    """
+    if price is None or previous_close is None or previous_close == 0:
+        return None
+    return (price - previous_close) / previous_close
 
 
 # ---------------------------------------------------------------------------
@@ -201,8 +257,8 @@ class YFinanceIndiaProvider(IndiaMarketProvider):
         return IndiaMarketSnapshot(
             price=price,
             previous_close=prev_close,
-            price_date="",
-            percent_change=None,
+            price_date=_price_date(price_timestamp),
+            percent_change=_percent_change(price, prev_close),
             market_cap=market_cap,
             shares_outstanding=shares_outstanding,
             fifty_two_week_low=fifty_two_week_low,

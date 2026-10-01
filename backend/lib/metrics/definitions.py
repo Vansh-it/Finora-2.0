@@ -126,6 +126,15 @@ def populate_registry(registry: MetricRegistry) -> None:
            method="FORMULA", inputs=("revenue", "other_income"),
            formula="Total Income = Revenue from Operations + Other Income",
            methodology="Sum of operating revenue and other income."))
+    # Share of profit from associates sits between total expenses and profit
+    # before tax: it is not an operating line, so it is neither income nor an
+    # expense, but it is inside the printed profit before tax. Without it the
+    # P&L identity cannot close for any company that has one. Bajaj Finance
+    # printed 5.11 crore, and total income 23,166.42 less total expenses
+    # 15,022.53 is 8,143.89 against a stated 8,149.00.
+    reg(_d("share_of_associates", "Share of Profit from Associates",
+           "income_statement", _ALL, requirement=Requirement.OPTIONAL.value,
+           methodology="Equity share of associates' profit, after tax."))
     reg(_d("net_profit", "Profit After Tax", "income_statement", _ALL,
            methodology="Profit attributable after all expenses and tax."))
     reg(_d("eps_basic", "Basic EPS", "income_statement", _ALL, unit=UnitType.PER_SHARE.value,
@@ -258,6 +267,11 @@ def populate_registry(registry: MetricRegistry) -> None:
     reg(_d("debt_repaid", "Debt Repaid", "cash_flow", _CORP, requirement=Requirement.OPTIONAL.value))
     reg(_d("share_buybacks", "Share Buybacks", "cash_flow", _CORP, requirement=Requirement.OPTIONAL.value))
     reg(_d("net_change_in_cash", "Net Change in Cash", "cash_flow", _CORP, requirement=Requirement.OPTIONAL.value))
+    # The opening and closing cash balances are what let a cash flow statement
+    # be verified at all: without them the three activity subtotals have no
+    # total to reconcile against, so the whole page has to be withheld.
+    reg(_d("opening_cash", "Opening Cash and Cash Equivalents", "cash_flow", _CORP, requirement=Requirement.OPTIONAL.value))
+    reg(_d("closing_cash", "Closing Cash and Cash Equivalents", "cash_flow", _CORP, requirement=Requirement.OPTIONAL.value))
 
     # ══════════════════════════════════════════════════════════════════
     # CORPORATE — growth
@@ -581,8 +595,16 @@ def populate_registry(registry: MetricRegistry) -> None:
     reg(_d("bank_operating_profit", "Operating Profit (Bank)", "income_statement", _BANK,
            method="FORMULA", inputs=("nii", "bank_other_income", "operating_expenses"),
            formula="Operating Profit = NII + Other Income − Operating Expenses"))
+    # A bank's total expenditure excludes provisions, and its printed profit
+    # before tax does not, so this line is the hinge between the two:
+    # 92,184.38 - 64,016.32 - 3,059.76 is exactly the 25,108.30 that HDFC Bank
+    # printed as profit before tax, and a company that prints impairment
+    # *inside* total expenses must not have it deducted a second time.
     reg(_d("provisions", "Provisions & Contingencies", "income_statement", _BANK,
-           requirement=Requirement.OPTIONAL.value))
+           requirement=Requirement.OPTIONAL.value,
+           methodology=("Credit provisions, impairment and contingencies, "
+                        "whether printed within total expenses or deducted "
+                        "separately to reach profit before tax.")))
     reg(_d("bank_pbt", "Profit Before Tax (Bank)", "income_statement", _BANK,
            method="FORMULA", inputs=("bank_operating_profit", "provisions"),
            formula="PBT = Operating Profit − Provisions", requirement=Requirement.OPTIONAL.value))

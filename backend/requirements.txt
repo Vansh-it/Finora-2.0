@@ -4,3 +4,24 @@ flask-cors>=5.0.0
 openai>=3.0.0
 gunicorn
 httpx>=0.28.0
+
+# India pipeline. Every one of these is imported by a module that is exercised
+# on the live research path, so a missing entry fails research rather than
+# falling back silently.
+lxml>=5.0.0          # dimensional XBRL: financial results and shareholding
+defusedxml>=0.7.1    # XML hardening for untrusted attachments
+pdfplumber>=0.11.0   # exchange-hosted filing PDFs
+yfinance>=0.2.40     # market-data fallback only, never a financial source
+
+# OCR stack for scanned filings (HDFC Bank posts results as images).
+# Only imported when a filing is a scan; a deployment without them still
+# parses every text filing and reports a scan as a scan.
+pypdfium2>=0.1.0    # PDF rasterisation for optical page reading
+rapidocr-onnxruntime>=1.0.0  # ONNX recognition engine for scanned pages
+onnxruntime>=1.16.0         # runtime for the ONNX models rapidocr loads
+numpy>=1.24.0       # image arrays for the OCR engine
+opencv-python-headless>=4.8.0  # image preprocessing for the OCR pipeline
+shapely>=2.0.0      # geometry operations in the OCR text-line clustering
+pyclipper>=1.3.0   # polygon clipping used by the OCR text detection
+flatbuffers>=2.0.0 # protobuf serialization for the ONNX runtime
+PyYAML>=6.0        # configuration and taxonomy data

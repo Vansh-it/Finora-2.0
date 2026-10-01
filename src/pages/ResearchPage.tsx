@@ -69,8 +69,9 @@ export default function ResearchPage() {
         ) : (
           <>
             <p className="mt-6 max-w-lg text-base leading-relaxed text-ink-2">
-              Enter a company name or ticker. Finora will locate its authoritative SEC filings, extract the
-              financial statements, calculate institutional-grade metrics, and verify every figure against
+              Enter a company name or ticker. Finora locates the company on its listing exchange,
+              then reads that market's authoritative filings, extracts the financial statements,
+              calculates institutional-grade metrics, and verifies every figure against
               independent sources.
             </p>
 
@@ -87,8 +88,8 @@ export default function ResearchPage() {
         )}
 
         <div className="mt-16 grid grid-cols-1 gap-6 border-t border-ink/15 pt-10 sm:grid-cols-3">
-          <Annotation label="Step 01" value="Identify the filer & CIK" />
-          <Annotation label="Step 02" value="Read 10-K / 10-Q / 8-K" tone="blue" />
+          <Annotation label="Step 01" value="Identify the company & its listing" />
+          <Annotation label="Step 02" value="Read the market's filings" tone="blue" />
           <Annotation label="Step 03" value="Verify & explain" tone="red" />
         </div>
       </div>
