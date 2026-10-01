@@ -79,11 +79,43 @@ DEFINITIVE_CONFIDENCE = 0.97
 #: article or a syllable fragment, and matching it proves nothing.
 _MIN_EVIDENCE_TOKEN_LEN = 4
 
+#: Ordinary words that show up in both search queries and company boilerplate.
+#:
+#: Sharing one of these is not identity evidence, even at identical length and
+#: identical spelling: "ALEXANDRIA REAL ESTATE EQUITIES" and the nonsense query
+#: "Zzzqqx Not A Real Company 9999" agree on the word "real" and nothing else.
+#: Blocking containment was not enough, because a shared *whole* word from this
+#: set is just as uninformative as a shared fragment. A fuzzy hit that rests only
+#: on these words is a guess, and the router declines to guess.
+_NON_EVIDENCE_WORDS = frozenset({
+    "real", "list", "listed", "company", "companys", "group", "holding",
+    "holdings", "limited", "corporation", "corp", "incorporated", "inc",
+    "international", "global", "national", "general", "services", "service",
+    "systems", "system", "technologies", "enterprise", "enterprises",
+    "industries", "industry", "partners", "capital", "ventures",
+})
+
 #: Two words are only evidence for each other when their lengths are close. This
 #: is what stops substring matches from counting: ``here`` is wholly contained in
 #: ``anywhere``, so a partial-ratio scorer rates that pair ~90 even though the two
 #: words share no identity at all.
 _MIN_TOKEN_LENGTH_RATIO = 0.8
+
+#: Methods where the resolver is *estimating* a match rather than asserting one.
+#:
+#: A fuzzy or prefix hit is a similarity score over a candidate pool, so it can
+#: fire on a company the user never named. An exact ticker, exact legal name, or
+#: alias is the resolver claiming "this is the entity", and only that kind of
+#: claim is allowed to outrank the other market.
+#:
+#: This is what separates the two senses of "found in the selected market". A
+#: USA-prefix hit on ``RELIANCE, INC.`` for the query ``Reliance Industries`` is
+#: a guess sitting in the user's chosen market; India's exact-name match on
+#: ``Reliance Industries Limited`` is an assertion of identity. The guess must
+#: not win, because routing on it researches a company the user did not name -
+#: the USA resolver absorbing Indian company names, which is the hazard this
+#: boundary exists to close.
+_GUESS_METHODS = frozenset({"fuzzy", "prefix"})
 
 #: Similarity required between two same-length words before one corroborates the
 #: other. Set below a typo-tolerant level so ``Microsft`` still evidences
@@ -126,6 +158,19 @@ class RouteCandidate:
     @property
     def definitive(self) -> bool:
         return not self.ambiguous and self.confidence >= DEFINITIVE_CONFIDENCE
+
+    @property
+    def asserts_identity(self) -> bool:
+        """Whether this candidate claims to *be* the queried entity.
+
+        Distinct from :attr:`definitive`, which is only about confidence. A fuzzy
+        hit can clear the confidence bar and still be a guess: ``Reliance
+        Industries`` scores 0.98 against the NYSE-listed ``RELIANCE, INC.``
+        because the two names resemble each other, but the user meant the NSE
+        company of that exact name. Only an exact ticker, exact legal name, or
+        alias is the resolver standing behind the identification.
+        """
+        return not self.ambiguous and self.method not in _GUESS_METHODS
 
     @property
     def rank(self) -> tuple[int, float]:
@@ -357,7 +402,9 @@ def _shares_evidence(query: str, *texts: str) -> bool:
     definitive band and never reach here.
     """
     query_tokens = [
-        t for t in _tokens(query) if len(t) >= _MIN_EVIDENCE_TOKEN_LEN
+        t
+        for t in _tokens(query)
+        if len(t) >= _MIN_EVIDENCE_TOKEN_LEN and t not in _NON_EVIDENCE_WORDS
     ]
     if not query_tokens:
         # A query of nothing but short words ("ASML", "BAC") carries no evidence
@@ -369,7 +416,7 @@ def _shares_evidence(query: str, *texts: str) -> bool:
         t
         for text in texts
         for t in _tokens(text)
-        if len(t) >= _MIN_EVIDENCE_TOKEN_LEN
+        if len(t) >= _MIN_EVIDENCE_TOKEN_LEN and t not in _NON_EVIDENCE_WORDS
     ]
     if not target_tokens:
         return False
@@ -577,6 +624,26 @@ def route_company_query(
         )
 
     winner.region = region
+
+    if selected is not None and not winner.asserts_identity:
+        # The selected market returned a *guess*, not an identification. The other
+        # market gets one look, because if it can name this company outright then
+        # the user is researching that company and simply has the wrong terminal
+        # open. A guess in the selected market cannot outrank that claim.
+        probe = _mismatch_probe(q, selected)
+        if probe is not None and probe.asserts_identity:
+            probe.region = probe.region or next(
+                (r for r in REGIONS if r is not selected), Region.US
+            )
+            return RegionRoute(
+                query=q, status=MISMATCH, region=probe.region,
+                country=probe.country, selected_region=selected,
+                chosen=probe, considered=considered + [probe],
+                message=_mismatch_message(q, probe, selected, probe.region),
+            )
+        # No identity claim anywhere else: the guess stands, because refusing to
+        # route on it would strand a legitimate search the selected market can
+        # still answer.
 
     if selected is not None and region is not selected:
         # The company was found, and it is in the market the user did not pick.
