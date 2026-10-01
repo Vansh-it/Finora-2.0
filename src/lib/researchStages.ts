@@ -14,6 +14,45 @@ import type { RegionRoute, RouteIdentity } from "./regionRouter";
 
 export type ResearchRegion = "US" | "INDIA";
 
+/**
+ * The markets Finora can research, in the order the selector shows them.
+ *
+ * This list is the UI's only notion of which market a search is for. It is
+ * deliberately separate from what the backend *supports* today: India research
+ * runs through its own pipeline and endpoint, so selecting it must be able to
+ * say "not available yet" rather than quietly sending the search to SEC/EDGAR.
+ */
+export const RESEARCH_REGIONS: ResearchRegion[] = ["US", "INDIA"];
+
+export const REGION_LABELS: Record<ResearchRegion, string> = {
+  US: "US",
+  INDIA: "India",
+};
+
+/** The exchange group a region's research draws from. */
+export const REGION_EXCHANGES: Record<ResearchRegion, string> = {
+  US: "Nasdaq / NYSE / AMEX",
+  INDIA: "NSE / BSE",
+};
+
+export function isResearchRegion(value: unknown): value is ResearchRegion {
+  return typeof value === "string" && (RESEARCH_REGIONS as string[]).includes(value);
+}
+
+/**
+ * Read a region from a URL, falling back to the US market.
+ *
+ * The fallback is the *default*, not a detection: a link without a region is a
+ * US search, exactly as it was before regions existed. An unrecognised value is
+ * also US rather than a thrown error, because a stale bookmark should land on a
+ * working page instead of a blank route.
+ */
+export function researchRegionFromParam(value: string | null | undefined): ResearchRegion {
+  const normalized = (value || "").trim().toUpperCase();
+  if (normalized === "INDIA") return "INDIA";
+  return "US";
+}
+
 export interface ResearchStage {
   key: string;
   title: string;

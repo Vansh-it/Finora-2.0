@@ -5,6 +5,12 @@ openai>=3.0.0
 gunicorn
 httpx>=0.28.0
 
+# Preferred local fuzzy engine for both company resolvers (lib/company_resolver,
+# lib/india/company_resolver). Optional at import time - each falls back to
+# difflib - but the fallback is markedly slower and weaker on token-order
+# matches, so it is declared to keep resolution behaviour identical everywhere.
+rapidfuzz>=3.0.0
+
 # India pipeline. Every one of these is imported by a module that is exercised
 # on the live research path, so a missing entry fails research rather than
 # falling back silently.

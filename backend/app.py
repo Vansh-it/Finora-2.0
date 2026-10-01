@@ -78,9 +78,19 @@ from lib.response_sanitizer import sanitize_response  # noqa: E402
 from lib.ssrf_guard import safe_url_or_none  # noqa: E402
 from lib.company_resolver import get_universe, smart_resolve, suggest_companies, parse_research_query, AmbiguousCompanyError  # noqa: E402
 from lib.core.regions import (  # noqa: E402
-    require_supported_region, UnsupportedRegionError,
+    Region,
+    InvalidRegionError,
+    require_supported_region,
+    UnsupportedRegionError,
+    info_for_region as get_region_info,
 )
-from lib.region_router import route_company_query  # noqa: E402
+from lib.region_router import (  # noqa: E402
+    MISMATCH,
+    ROUTED,
+    coerce_region,
+    route_company_query,
+)
+from lib.india.live_resolver import search as india_search  # noqa: E402
 # Chat Intelligence Engine
 from lib.chat.orchestrator import ChatOrchestrator  # noqa: E402
 from lib.chat.router import route_query  # noqa: E402
@@ -1527,15 +1537,85 @@ def api_dashboard_chat():
 # Company autocomplete / suggest endpoint
 @app.get("/api/company/suggest")
 def api_company_suggest():
+    """Autocomplete, scoped to one market.
+
+    The region is not decoration on the result: it decides which universe is
+    searched. Each resolver only knows its own exchange list, so searching both
+    would put NSE symbols next to Nasdaq tickers in one dropdown, and picking the
+    wrong row would research the wrong company in the wrong currency. A search
+    with no region searches the US universe, which is what every caller sent
+    before regions existed.
+
+    Both shapes are normalised to ``{ticker, name, exchange, score, region}`` so
+    the client renders one list regardless of market.
+    """
     q = request.args.get("q", "").strip()
-    if not q:
-        return jsonify({"results": []})
+    raw_limit = request.args.get("limit", "8")
     try:
-        results = suggest_companies(q, limit=8)
-        return jsonify({"results": results})
+        limit = max(1, min(25, int(raw_limit)))
+    except (TypeError, ValueError):
+        limit = 8
+
+    if not q:
+        return jsonify({"results": [], "region": None})
+
+    # Autocomplete echoes the query back into a rendered list, so cap the input
+    # rather than letting one request marshal an unbounded string.
+    if len(q) > 200:
+        return jsonify({
+            "error": "Query too long (max 200 characters)",
+            "results": [],
+        }), 400
+
+    try:
+        selected = coerce_region(request.args.get("region"))
+    except InvalidRegionError as exc:
+        return jsonify({"error": str(exc), "results": []}), 400
+
+    # No stated region means the US universe, matching pre-region behaviour.
+    region = selected or Region.US
+    try:
+        if region is Region.INDIA:
+            results = [_india_suggest_row(r) for r in india_search(q, limit=limit)]
+        else:
+            results = [_us_suggest_row(r) for r in suggest_companies(q, limit=limit)]
     except Exception as exc:
-        logger.warning(f"Suggest failed: {exc}")
-        return jsonify({"results": []})
+        logger.warning(f"Suggest failed for region {region.value}: {exc}")
+        return jsonify({"results": [], "region": region.value})
+
+    return jsonify({
+        "results": results,
+        "region": region.value,
+        "exchanges": list(get_region_info(region).exchanges),
+    })
+
+
+def _india_suggest_row(row: dict) -> dict:
+    """Normalise an NSE master row into the shared suggestion shape."""
+    return {
+        "ticker": row.get("nse_symbol") or "",
+        "name": row.get("display_name") or "",
+        "exchange": "NSE",
+        "country": row.get("country") or "IN",
+        "currency": row.get("currency") or "INR",
+        "isin": row.get("isin") or "",
+        "score": row.get("score") or 0,
+        "region": Region.INDIA.value,
+    }
+
+
+def _us_suggest_row(row: dict) -> dict:
+    """Normalise an SEC universe row into the shared suggestion shape."""
+    return {
+        "ticker": row.get("ticker") or "",
+        "name": row.get("name") or "",
+        "exchange": row.get("exchange") or "",
+        "country": "US",
+        "currency": "USD",
+        "cik": row.get("cik") or "",
+        "score": row.get("score") or 0,
+        "region": Region.US.value,
+    }
 
 
 @app.post("/api/company/resolve")
@@ -1595,13 +1675,20 @@ def api_research_route():
     if not isinstance(query, str) or not query.strip():
         return jsonify({"error": "Missing or invalid 'query' field"}), 400
 
-    route = route_company_query(query)
+    # A stated region scopes the search; an absent one keeps the whole-world
+    # behaviour. An unrecognised value is a 400 rather than a silent fallback.
+    try:
+        selected = coerce_region(body.get("region"))
+    except InvalidRegionError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    route = route_company_query(query, region=selected)
     payload = route.to_dict()
 
     if not route.routed:
-        # 409: the query resolved nowhere Finora researches, or resolved to more
-        # than one company. Both are refusals the user must act on, not failures
-        # to retry.
+        # 409: the query resolved nowhere Finora researches, resolved to more than
+        # one company, or resolved in the market the caller did not ask for. All
+        # three are refusals the user must act on, not failures to retry.
         payload["error"] = route.message
         return jsonify(payload), 409
 
@@ -1625,6 +1712,40 @@ def api_run_research():
     user, auth_err = _get_auth_user()
     if auth_err:
         return auth_err
+
+    # Region is mandatory here, not optional. This endpoint starts the pipeline
+    # without routing the user through /api/research/route, so without an explicit
+    # region it is exactly the USA bypass the region selection is supposed to
+    # close. India is refused outright rather than sent down the SEC path.
+    try:
+        requested_region = coerce_region(body.get("region"))
+    except InvalidRegionError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if requested_region is None:
+        return jsonify({
+            "error": (
+                "Missing 'region'. Research must state which market it is for; "
+                "Finora will not guess one and run the US pipeline by default."
+            ),
+        }), 400
+
+    
+
+    region_gate = route_company_query(company, region=requested_region)
+    if region_gate.status == MISMATCH:
+        # Named, but not in the market asked for. Refused before any research is
+        # started, with the found company attached so the client can offer the
+        # switch as a deliberate user action.
+        return jsonify({
+            **region_gate.to_dict(),
+            "error": region_gate.message,
+        }), 409
+    if region_gate.status != ROUTED:
+        return jsonify({
+            **region_gate.to_dict(),
+            "error": region_gate.message,
+        }), 409
 
     # Strict limit: 5 total researches per user, period.
     quota = can_use_research(user.user_id)

@@ -82,6 +82,25 @@ def routes_through_us(region: Region) -> bool:
     return region == Region.US
 
 
+class InvalidRegionError(ValueError):
+    """A caller supplied a region Finora does not recognise.
+
+    Distinct from :class:`UnsupportedRegionError`: nothing is wrong with the
+    *company* here, the request itself is malformed. Falling back to "no region
+    preference" here would quietly discard the caller's constraint and let the
+    other market answer a question that was scoped to one, so it is raised instead.
+
+    Accepts ``"US"``/``"us"`` and ``"INDIA"``/``"india"``, which is what arrives
+    from a query string or a JSON body.
+    """
+
+    def __init__(self, value: object):
+        supported = "/".join(r.value for r in REGIONS)
+        super().__init__(
+            f"Unknown region {value!r}. Expected one of: {supported}."
+        )
+
+
 class UnsupportedRegionError(ValueError):
     """A resolved company belongs to a region Finora cannot yet research.
 

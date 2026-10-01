@@ -6,11 +6,18 @@ import ResearchInput from "../components/ResearchInput";
 import Annotation from "../components/Annotation";
 import PaperTexture from "../components/PaperTexture";
 import ResearchProcessingPage from "./ResearchProcessingPage";
+import {
+  researchRegionFromParam,
+  REGION_EXCHANGES,
+} from "../lib/researchStages";
 
 export default function ResearchPage() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const ticker = params.get("ticker");
+  // The URL owns the selected market, so reloading /research?region=INDIA — or
+  // sharing that link — opens the selector on India rather than resetting it.
+  const region = researchRegionFromParam(params.get("region"));
   const [remaining, setRemaining] = useState<number | null>(null);
   const [limit, setLimit] = useState(5);
   const [exhausted, setExhausted] = useState(false);
@@ -69,10 +76,12 @@ export default function ResearchPage() {
         ) : (
           <>
             <p className="mt-6 max-w-lg text-base leading-relaxed text-ink-2">
-              Enter a company name or ticker. Finora locates the company on its listing exchange,
-              then reads that market's authoritative filings, extracts the financial statements,
-              calculates institutional-grade metrics, and verifies every figure against
-              independent sources.
+              Choose a market, then enter a company name or ticker. Finora reads
+              that market's authoritative filings, extracts the financial
+              statements, calculates institutional-grade metrics, and verifies
+              every figure against independent sources. Companies listed in the
+              other market are named for you rather than researched in the wrong
+              currency.
             </p>
 
             {remaining !== null && (
@@ -82,8 +91,12 @@ export default function ResearchPage() {
             )}
 
             <div className="mt-10 max-w-2xl">
-              <ResearchInput />
+              <ResearchInput region={region} />
             </div>
+            <p className="mt-4 max-w-2xl font-mono text-xs text-ink-3">
+              Searching {REGION_EXCHANGES[region]}. Companies listed elsewhere are
+              reported rather than researched in the wrong market.
+            </p>
           </>
         )}
 

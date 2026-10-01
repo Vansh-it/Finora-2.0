@@ -1,18 +1,37 @@
 import { useState, useEffect, useRef, useCallback, type FormEvent } from "react";
-import { ArrowRight, AlertCircle, Search, Building2 } from "lucide-react";
+import { ArrowRight, AlertCircle, Building2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import TickerChip from "./TickerChip";
+import {
+  RESEARCH_REGIONS,
+  REGION_LABELS,
+  REGION_EXCHANGES,
+  researchRegionFromParam,
+  type ResearchRegion,
+} from "../lib/researchStages";
 
-const QUICK_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"];
+/**
+ * Quick-pick companies per market.
+ *
+ * These are only offered when they can actually route. A US ticker list shown
+ * while the user is in the India tab would send every one of those clicks into
+ * the mismatch path, which is a worse experience than offering nothing.
+ */
+const QUICK_TICKERS: Record<ResearchRegion, string[]> = {
+  US: ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"],
+  INDIA: ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK"],
+};
 
 interface Suggestion {
   ticker: string;
   name: string;
   exchange?: string;
   cik?: string;
+  region?: ResearchRegion;
 }
 
-export default function ResearchInput() {
+export default function ResearchInput({ region: regionProp }: { region?: ResearchRegion }) {
+  const [region, setRegion] = useState<ResearchRegion>(regionProp ?? "US");
   const [value, setValue] = useState("");
   const [showError, setShowError] = useState(false);
   const [shaking, setShaking] = useState(false);
@@ -25,6 +44,18 @@ export default function ResearchInput() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const navigate = useNavigate();
+
+  // Read inside the debounced fetch without making it a dependency, so changing
+  // region does not rebuild the callback while a request is already in flight.
+  const regionRef = useRef<ResearchRegion>(region);
+  regionRef.current = region;
+
+  // The parent owns the region when it is given one, so a region change higher up
+  // (a query parameter, a route) is reflected here without a second source of
+  // truth. Left uncontrolled, the selector drives it locally.
+  useEffect(() => {
+    if (regionProp) setRegion(regionProp);
+  }, [regionProp]);
 
   useEffect(() => {
     return () => {
@@ -44,29 +75,37 @@ export default function ResearchInput() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const fetchSuggestions = useCallback(async (query: string) => {
-    if (query.length < 2) {
-      setSuggestions([]);
-      setShowSuggestions(false);
-      return;
-    }
-    setIsLoading(true);
-    try {
-      const res = await fetch(`/api/company/suggest?q=${encodeURIComponent(query)}&limit=8`);
-      if (res.ok) {
+  const fetchSuggestions = useCallback(
+    async (query: string, forRegion: ResearchRegion) => {
+      if (query.length < 2) {
+        setSuggestions([]);
+        setShowSuggestions(false);
+        return;
+      }
+      setIsLoading(true);
+      try {
+        // The region is sent as a search scope, not a label: the backend decides
+        // which exchange universe to search, so an India tab never lists Nasdaq
+        // tickers. Stale responses are dropped by region, so switching tabs mid
+        // request cannot leave the previous market's suggestions on screen.
+        const res = await fetch(
+          `/api/company/suggest?q=${encodeURIComponent(query)}&region=${forRegion}&limit=8`
+        );
+        if (!res.ok) return;
         const data = await res.json();
-        // Handle both {results: [...]} and [...] response formats
-        const items = Array.isArray(data) ? data : (data.results || []);
+        const items: Suggestion[] = Array.isArray(data) ? data : data.results || [];
+        if (forRegion !== regionRef.current) return;
         setSuggestions(items);
         setShowSuggestions(items.length > 0);
         setSelectedIndex(-1);
+      } catch {
+        // Silently ignore autocomplete errors
+      } finally {
+        setIsLoading(false);
       }
-    } catch {
-      // Silently ignore autocomplete errors
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+    },
+    []
+  );
 
   function triggerError() {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -84,14 +123,10 @@ export default function ResearchInput() {
       triggerError();
       return;
     }
-    // If it looks like a ticker (1-5 uppercase letters), use as ticker
-    // Otherwise use as search query
-    const isTicker = /^[A-Za-z]{1,5}$/.test(query);
-    if (isTicker) {
-      navigate(`/research?ticker=${query.toUpperCase()}`);
-    } else {
-      navigate(`/research?ticker=${encodeURIComponent(query)}`);
-    }
+    // Region travels in the URL so it survives a refresh, a shared link, and the
+    // hop to the processing page. Without it the selection would reset to the
+    // default and a deliberately India-scoped search would be answered as a US one.
+    navigate(`/research?ticker=${encodeURIComponent(query)}&region=${region}`);
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -144,16 +179,23 @@ export default function ResearchInput() {
             setValue(v);
             if (showError) setShowError(false);
 
-            // Debounced autocomplete
+            // Debounced autocomplete, scoped to the market currently selected
             if (debounceRef.current) clearTimeout(debounceRef.current);
-            debounceRef.current = setTimeout(() => fetchSuggestions(v), 250);
+            debounceRef.current = setTimeout(
+              () => fetchSuggestions(v, region),
+              250
+            );
           }}
           onFocus={() => {
             if (suggestions.length > 0) setShowSuggestions(true);
           }}
           onKeyDown={handleKeyDown}
-          placeholder="Research Microsoft, Apple, Walmart..."
-          aria-label="Research a company"
+          placeholder={
+            region === "INDIA"
+              ? "Research Reliance, TCS, HDFC Bank..."
+              : "Research Microsoft, Apple, Walmart..."
+          }
+          aria-label={`Research a ${REGION_LABELS[region]} company`}
           aria-autocomplete="list"
           aria-expanded={showSuggestions}
           aria-activedescendant={selectedIndex >= 0 ? `suggestion-${selectedIndex}` : undefined}
@@ -212,6 +254,50 @@ export default function ResearchInput() {
         </div>
       )}
 
+      {/* Market selector. Stated before the search box because it is a
+          constraint on the search, not a filter applied to its results. */}
+      <fieldset className="mt-3 border-2 border-ink-10 bg-paper-2 px-3 py-2">
+        <legend className="sr-only">Research market</legend>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="font-mono text-[10px] font-bold tracking-[0.2em] text-ink-3 uppercase">
+            Market
+          </span>
+          <div className="flex gap-0" role="radiogroup" aria-label="Research market">
+            {RESEARCH_REGIONS.map((r) => {
+              const active = r === region;
+              return (
+                <button
+                  key={r}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => {
+                    if (r === region) return;
+                    setRegion(r);
+                    // Market changed under a typed query, so the suggestions for
+                    // the previous market are stale by definition.
+                    setSuggestions([]);
+                    setShowSuggestions(false);
+                    setSelectedIndex(-1);
+                    if (value.trim().length >= 2) fetchSuggestions(value, r);
+                  }}
+                  className={`border-2 px-4 py-1.5 font-mono text-[11px] font-bold tracking-[0.1em] uppercase transition-colors ${
+                    active
+                      ? "border-ink bg-ink text-paper"
+                      : "border-transparent text-ink-3 hover:border-ink/20 hover:text-ink"
+                  }`}
+                >
+                  {REGION_LABELS[r]}
+                </button>
+              );
+            })}
+          </div>
+          <span className="font-mono text-[10px] text-ink-3">
+            {REGION_EXCHANGES[region]}
+          </span>
+        </div>
+      </fieldset>
+
       {/* Premium validation toast */}
       <div
         className={`overflow-hidden transition-all duration-300 ease-out ${
@@ -245,9 +331,9 @@ export default function ResearchInput() {
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <span className="mr-1 font-mono text-[10px] font-bold tracking-[0.2em] text-ink-3 uppercase">Try:</span>
-        {QUICK_TICKERS.map((t) => (
+        {QUICK_TICKERS[region].map((t) => (
           <TickerChip key={t} ticker={t} onClick={() => {
-            navigate(`/research?ticker=${t}`);
+            navigate(`/research?ticker=${encodeURIComponent(t)}&region=${region}`);
           }} />
         ))}
       </div>

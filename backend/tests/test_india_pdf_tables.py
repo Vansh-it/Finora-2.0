@@ -12,6 +12,8 @@ import pytest
 
 from lib.india.pdf_tables import (
     Column,
+    SCOPE_UNKNOWN,
+    ParsedFiling,
     detect_unit,
     looks_numeric,
     parse_number,
@@ -21,6 +23,7 @@ from lib.india.pdf_tables import (
     _column_for,
     _mark_current_column,
     _qualify_role,
+    _resolve_statement_scopes,
     _row_cells,
     PageAnalysis,
     Row,
@@ -422,3 +425,144 @@ def test_dot_grouping_does_not_disturb_ordinary_separators():
         value, reason = parse_number(raw)
         assert reason == "", (raw, reason)
         assert value == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# Page-level scope: a continuation page belongs to the statement it continues
+#
+# Regression for a live Reliance Q1 FY2027 filing. Its consolidated P&L opens
+# on page 9 under "UNAUDITED CONSOLIDATED FINANCIAL RESULTS..." and spills onto
+# page 10, which prints only the column headings ("Particulars / Quarter Ended /
+# Year Ended (Audited)") and the restatement rows - no heading, no basis word.
+# The standalone set does the same from page 18 onto page 19. Page scope came
+# out as "" for both spill pages, which the live test rejects: blank is not a
+# reporting basis, and defaulting those pages to the document's dominant scope
+# would have relabelled standalone figures as consolidated.
+# ---------------------------------------------------------------------------
+
+_TABLE_HEAD = {"particulars", "quarter", "year", "ended", "audited"}
+
+
+def _statement(page_number, *, scope="", heading="", head=_TABLE_HEAD):
+    page = PageAnalysis(page_number=page_number, role="P_AND_L", scope=scope)
+    page.heading_role = heading
+    page.header_terms = set(head)
+    return page
+
+
+def _filing(*pages):
+    filing = ParsedFiling()
+    filing.pages = list(pages)
+    return filing
+
+
+def test_a_page_that_states_its_own_basis_is_left_alone():
+    """Page evidence wins; nothing upstream may relabel it."""
+    opener = _statement(1, scope="STANDALONE", heading="P_AND_L")
+    filing = _filing(opener)
+    _resolve_statement_scopes(filing)
+    assert opener.scope == "STANDALONE"
+
+
+def test_a_spill_page_inherits_the_statement_it_continues():
+    """The exact live failure: a page with no heading and no basis word.
+
+    Page 9 declares CONSOLIDATED in its heading and page 10 repeats its column
+    headings with no heading of its own. Page 10 continues page 9's table, so
+    it carries page 9's basis - previously it came back blank.
+    """
+    opener = _statement(9, scope="CONSOLIDATED", heading="P_AND_L")
+    spill = _statement(10)
+    _resolve_statement_scopes(_filing(opener, spill))
+    assert spill.scope == "CONSOLIDATED"
+
+
+def test_a_spill_page_follows_its_own_section_not_the_document_default():
+    """Page 19 continues the standalone set, not the consolidated majority."""
+    consolidated_open = _statement(9, scope="CONSOLIDATED", heading="P_AND_L")
+    consolidated_spill = _statement(10)
+    standalone_open = _statement(18, scope="STANDALONE", heading="P_AND_L")
+    standalone_spill = _statement(19)
+    filing = _filing(
+        consolidated_open, consolidated_spill, standalone_open, standalone_spill,
+    )
+    _resolve_statement_scopes(filing)
+    assert consolidated_spill.scope == "CONSOLIDATED"
+    assert standalone_spill.scope == "STANDALONE"
+
+
+def test_a_new_section_heading_closes_the_previous_one():
+    """After a standalone opener, a bare page is standalone, not consolidated."""
+    standalone_open = _statement(18, scope="STANDALONE", heading="P_AND_L")
+    spill = _statement(19)
+    filing = _filing(
+        _statement(9, scope="CONSOLIDATED", heading="P_AND_L"),
+        _statement(10),
+        standalone_open,
+        spill,
+    )
+    _resolve_statement_scopes(filing)
+    assert spill.scope == "STANDALONE"
+
+
+def test_a_page_that_names_a_statement_but_no_basis_is_not_inherited_into():
+    """A heading without a basis word opens an unknown section.
+
+    Inheriting the previous section's basis here is the false assignment: the
+    new section may be the other basis entirely, and its heading simply did not
+    say. Silence is reported, never resolved by predecessor.
+    """
+    first = _statement(1, scope="CONSOLIDATED", heading="P_AND_L")
+    silent_section = _statement(5, heading="P_AND_L")
+    filing = _filing(first, silent_section)
+    _resolve_statement_scopes(filing)
+    assert silent_section.scope == SCOPE_UNKNOWN
+
+
+def test_a_page_that_continues_a_silent_section_stays_unknown():
+    """Nothing downstream of an unestablished basis can be established either."""
+    filing = _filing(
+        _statement(1, scope="CONSOLIDATED", heading="P_AND_L"),
+        _statement(5, heading="P_AND_L"),
+        _statement(6),
+    )
+    _resolve_statement_scopes(filing)
+    assert filing.pages[-1].scope == SCOPE_UNKNOWN
+
+
+def test_a_page_that_repeats_a_different_table_is_not_a_continuation():
+    """Following a statement is not continuing it.
+
+    The page comes right after a consolidated opener but prints none of its
+    column headings, so there is no evidence it is that table spilled over.
+    Document order alone must not assign a basis.
+    """
+    opener = _statement(1, scope="CONSOLIDATED", heading="P_AND_L")
+    unrelated = _statement(2, head=set())
+    _resolve_statement_scopes(_filing(opener, unrelated))
+    assert unrelated.scope == SCOPE_UNKNOWN
+
+
+def test_a_statement_with_no_evidence_at_all_is_unknown_not_blank():
+    """Blank scope is not an acceptable resting state for a statement page."""
+    bare = PageAnalysis(page_number=1, role="P_AND_L")
+    _resolve_statement_scopes(_filing(bare))
+    assert bare.scope == SCOPE_UNKNOWN
+    assert bare.scope != ""
+
+
+def test_non_statement_pages_are_never_assigned_a_basis():
+    """Scope belongs to statements; a note page is not given one."""
+    note = PageAnalysis(page_number=3, role="SEGMENT")
+    note.header_terms = set(_TABLE_HEAD)
+    _resolve_statement_scopes(
+        _filing(_statement(1, scope="CONSOLIDATED", heading="P_AND_L"), note)
+    )
+    assert note.scope == ""
+
+
+def test_the_unknown_marker_is_not_mistaken_for_a_real_basis():
+    """Every basis check matches on CONSOLIDATED/STANDALONE; UNKNOWN must not."""
+    assert "STANDALONE" not in SCOPE_UNKNOWN
+    assert "CONSOLIDATED" not in SCOPE_UNKNOWN
+    assert SCOPE_UNKNOWN not in ("CONSOLIDATED", "STANDALONE")

@@ -1,3 +1,5 @@
+import type { ResearchRegion } from "./researchStages";
+
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
 const MAX_RETRIES = 2;
@@ -493,9 +495,18 @@ export interface RunResearchResponse {
   error?: string;
 }
 
+/**
+ * Run the US research pipeline.
+ *
+ * `region` is sent because the endpoint requires it: it starts the pipeline
+ * without routing the user through /api/research/route first, so an unscoped call
+ * is exactly the US-pipeline-by-default path that region selection exists to
+ * close. `token` stays last so existing three-argument callers keep working.
+ */
 export async function runResearch(
   company: string,
   periodMode: string = "latest",
+  region: ResearchRegion = "US",
   token?: string
 ): Promise<RunResearchResponse> {
   const headers: Record<string, string> = {};
@@ -503,7 +514,7 @@ export async function runResearch(
 
   return apiFetch("/api/research/run", {
     method: "POST",
-    body: JSON.stringify({ company, period_mode: periodMode }),
+    body: JSON.stringify({ company, period_mode: periodMode, region }),
     headers,
   });
 }

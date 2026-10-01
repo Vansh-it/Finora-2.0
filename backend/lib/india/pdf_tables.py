@@ -424,6 +424,18 @@ class PageAnalysis:
     scope: str = ""
     unit: Unit = field(default_factory=lambda: Unit(scale=1.0, name="rupee"))
     role: str = "OTHER"
+    #: The role a statement heading on *this* page declared, or "" when the
+    #: page named no statement. Set only from the title/full-text role patterns,
+    #: never from row-content anchors: a page that merely contains income-statement
+    #: line items has not said which statement it opens. This is the evidence that
+    #: separates a section's first page from its continuation.
+    heading_role: str = ""
+    #: Table-header vocabulary recovered from this page's header band. A
+    #: continuation page repeats the column headings of the table it continues
+    #: ("Particulars / Quarter Ended / Year Ended (Audited)"), which is how a
+    #: page that names neither itself nor its basis can still be shown to belong
+    #: to a specific statement rather than merely to follow one.
+    header_terms: set[str] = field(default_factory=set)
     columns: list[Column] = field(default_factory=list)
     rows: list[Row] = field(default_factory=list)
     rejected: list[dict[str, Any]] = field(default_factory=list)
@@ -436,6 +448,8 @@ class PageAnalysis:
             "scope": self.scope,
             "unit": self.unit.to_dict(),
             "role": self.role,
+            "heading_role": self.heading_role,
+            "header_terms": sorted(self.header_terms),
             "columns": [c.to_dict() for c in self.columns],
             "row_count": len(self.rows),
             "char_count": self.char_count,
@@ -560,6 +574,19 @@ _SCOPE_PATTERNS = (
     ("CONSOLIDATED", re.compile(r"consolidated", re.I)),
     ("STANDALONE", re.compile(r"stand ?alone", re.I)),
 )
+
+#: The explicit "this page's basis could not be established" marker. A
+#: statement page is never left blank and never given a basis it did not
+#: evidence: it carries either a real scope or this. It is deliberately not a
+#: member of any real reporting basis, so every consumer that pattern-matches
+#: on ``CONSOLIDATED``/``STANDALONE`` treats it as "no basis here".
+SCOPE_UNKNOWN = "UNKNOWN"
+
+#: Roles whose pages carry a reporting basis. One definition, used by both the
+#: page-scope resolution and ``ParsedFiling.statement_pages``: disagreeing would
+#: resolve scope for pages that are never read, or read pages never resolved.
+_STATEMENT_ROLES = ("P_AND_L", "BALANCE_SHEET", "CASH_FLOW")
+
 
 
 def _row_tolerance(page_height: float) -> float:
@@ -885,6 +912,9 @@ def _analyse_words(
         for role, pattern in _ROLE_PATTERNS:
             if _matches(pattern, corpus, flat_corpus):
                 analysis.role = role
+                # The page named a statement in its own text, so it opens one.
+                # Row-content anchors below deliberately do NOT set this.
+                analysis.heading_role = role
                 break
         if analysis.role != "OTHER":
             break
@@ -921,6 +951,17 @@ def _analyse_words(
     # headings form columns of their own, one phantom column per heading. Gating
     # on the bottom keeps a heading where it belongs: as the label of a column.
     body_top = max((w["bottom"] for w in header_words), default=0.0)
+
+    # The words that head the table. A continuation page repeats the column
+    # headings of the table it continues ("Particulars / Quarter Ended / Year
+    # Ended (Audited)"), so this vocabulary is what later lets a page that names
+    # neither itself nor its basis be shown to continue *this* statement rather
+    # than merely to follow it.
+    analysis.header_terms = {
+        token
+        for token in re.findall(r"[a-z]+", " ".join(w["text"] for w in header_words).lower())
+        if len(token) > 1
+    }
 
     # --- numeric cells ---------------------------------------------------
     # Only cells below the header count. This drops the address blocks, phone
@@ -1088,7 +1129,7 @@ class ParsedFiling:
 
     @property
     def statement_pages(self) -> list[PageAnalysis]:
-        return [p for p in self.pages if p.role in ("P_AND_L", "BALANCE_SHEET", "CASH_FLOW")]
+        return [p for p in self.pages if p.role in _STATEMENT_ROLES]
 
     def quality(self) -> dict[str, Any]:
         total = sum(len(p.rejected) for p in self.pages)
@@ -1151,6 +1192,94 @@ def _identity_from_text(text: str, filing: ParsedFiling) -> None:
 #: the same rules as a text page, so reading too few loses data and reading more
 #: costs time but cannot introduce a different kind of error.
 _MAX_OCR_PAGES = 14
+
+
+#: Header words that identify a results table by its column headings rather
+#: than by its content. Two pages sharing several of these carry the same kind
+#: of table; a page sharing none of them is not the table the section opened.
+_TABLE_MARKER_TERMS = frozenset({
+    "particulars", "quarter", "year", "period", "ended", "audited",
+    "month", "months", "date", "particulars",
+})
+
+#: How many of those headings two pages must share before the second is read as
+#: continuing the first's table. One word is noise ("year" appears in prose);
+#: two of "Particulars / Quarter Ended / Year Ended" is a column header row
+#: repeating, which is what a continuation page actually prints.
+_MIN_SHARED_HEADER_TERMS = 2
+
+
+def _continues_table(open_page: PageAnalysis, page: PageAnalysis) -> bool:
+    """True when ``page`` repeats the column headings of ``open_page``.
+
+    This is the difference between a page that *follows* a statement and a page
+    that *continues* it. Both carry income-statement rows, so row content cannot
+    tell them apart; the header row can, because a new section (say the
+    standalone set) prints its own headings while a spilled page repeats the
+    ones already on the table.
+    """
+    shared = (
+        open_page.header_terms & page.header_terms & _TABLE_MARKER_TERMS
+    )
+    return len(shared) >= _MIN_SHARED_HEADER_TERMS
+
+
+def _resolve_statement_scopes(filing: ParsedFiling) -> None:
+    """Give every statement page a basis, or an explicit ``UNKNOWN``.
+
+    A results filing prints its basis - consolidated, standalone - in the
+    heading of the page that *opens* each statement. The pages that continue
+    that statement across a page break repeat the table but not the heading, so
+    their own text says nothing about basis at all. Reading that silence as
+    "no basis" is what left continuation pages blank; reading it as
+    "the document's dominant basis" is what would quietly relabel a standalone
+    page as consolidated.
+
+    So the basis travels with the open statement, and only with proof that the
+    statement is still the one open:
+
+    * A page that states its own basis keeps it, whatever came before. Page
+      evidence beats inherited evidence.
+    * A page that names a statement in its own heading *and* states a basis
+      opens a new section at that basis.
+    * A page that names a statement but states no basis opens a section of
+      unknown basis: its predecessor says nothing about it, so it is ``UNKNOWN``
+      rather than the previous section's basis.
+    * A page that names no statement and states no basis continues the section
+      currently open - but only if it repeats that section's column headings.
+      Otherwise it is ``UNKNOWN``.
+
+    Nothing is guessed from document order alone, no basis is assigned
+    globally, and a page that cannot be placed says so instead of being left
+    blank or labelled by default.
+    """
+    open_scope = ""        # basis of the statement currently open
+    open_page: Optional[PageAnalysis] = None
+
+    for page in filing.pages:
+        if page.role not in _STATEMENT_ROLES:
+            continue
+
+        # 1. The page says what it is. Nothing below may override that.
+        if page.scope:
+            if page.heading_role:
+                open_scope, open_page = page.scope, page
+            continue
+
+        # 2. The page names a statement but not its basis: a section whose
+        #    basis its own text does not carry. Inheriting the predecessor's
+        #    basis here is exactly the false assignment this must prevent.
+        if page.heading_role:
+            page.scope = SCOPE_UNKNOWN
+            open_scope, open_page = "", None
+            continue
+
+        # 3. Neither. It continues a statement only if the section open at the
+        #    time is evidenced and the page repeats that section's table.
+        if open_scope and open_page is not None and _continues_table(open_page, page):
+            page.scope = open_scope
+        else:
+            page.scope = SCOPE_UNKNOWN
 
 
 def parse_pdf(payload: bytes, max_pages: int = 60, max_ocr_pages: int = _MAX_OCR_PAGES) -> ParsedFiling:
@@ -1216,9 +1345,10 @@ def parse_pdf(payload: bytes, max_pages: int = 60, max_ocr_pages: int = _MAX_OCR
                 _apply_ocr(payload, filing, max_ocr_pages=max_ocr_pages)
 
             # Scope: the dominant scope across statement pages wins.
+            _resolve_statement_scopes(filing)
             scopes: dict[str, int] = {}
             for p in filing.statement_pages:
-                if p.scope:
+                if p.scope and p.scope != SCOPE_UNKNOWN:
                     scopes[p.scope] = scopes.get(p.scope, 0) + 1
             filing.scope = max(scopes, key=lambda k: scopes[k]) if scopes else ""
             if not filing.scope and "consolidated" in head.lower():
