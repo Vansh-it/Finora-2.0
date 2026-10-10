@@ -8,7 +8,7 @@ import { ApiError, getReviews, postReview } from '../lib/api';
 import type { Review } from '../lib/data';
 import { BottomSheet } from '../components/BottomSheet';
 import { PullToRefresh } from '../components/PullToRefresh';
-import { Button, EditorialHeading, ErrorState, HighlightText, Skeleton, SourceStamp, Stars, TickerChip } from '../components/ui';
+import { Button, EditorialHeading, HighlightText, Skeleton, SourceStamp, Stars, TickerChip } from '../components/ui';
 import { formatClock, formatDate } from '../lib/format';
 import { getQuotaState } from '../lib/api';
 import { isAuthed } from '../lib/auth';
@@ -176,6 +176,7 @@ export function ReviewsPage() {
   };
 
   const list = (query.data ?? []).slice(0, visible);
+  const empty = !query.loading && (query.data?.length ?? 0) === 0;
 
   return (
     <div className="pb-28">
@@ -186,8 +187,7 @@ export function ReviewsPage() {
       <PullToRefresh onRefresh={() => query.refetch()}>
         <div className="space-y-3 px-5 pt-4">
           {query.loading && !query.data && [0, 1, 2].map((i) => <Skeleton key={i} className="h-[150px] w-full" />)}
-          {query.error && !query.data && <ErrorState message="Couldn't load reviews." onRetry={() => { void query.refetch(); }} />}
-          {query.data && query.data.length === 0 && (
+          {empty && (
             <div className="card-dark anim-rise p-6 text-center">
               <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[#ff5a1f]/15">
                 <Star size={22} className="text-[#ff8a3d]" fill="#ff8a3d" />
@@ -197,6 +197,11 @@ export function ReviewsPage() {
               <button onClick={() => setSheet(true)} className="btn-primary pressable mt-4 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl font-display text-[15px] font-semibold text-white">
                 <PenLine size={17} /> Write a review
               </button>
+              {(query.error) && (
+                <button onClick={() => { void query.refetch(); }} className="pressable mx-auto mt-3 flex min-h-[44px] items-center text-[13px] text-[#a7a29a] underline decoration-white/20">
+                  Retry loading reviews
+                </button>
+              )}
             </div>
           )}
           {list.map((r, i) => (
@@ -221,7 +226,7 @@ export function ReviewsPage() {
         </div>
       </PullToRefresh>
 
-      {!(query.data && query.data.length === 0) && (
+      {!empty && (
         <button
           onClick={() => setSheet(true)}
           className="btn-primary pressable fixed bottom-[92px] z-40 flex min-h-[52px] items-center gap-2 rounded-2xl px-5 font-display text-[15px] font-semibold text-white"
