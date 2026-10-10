@@ -302,11 +302,4 @@ export interface Review {
   date: string;
 }
 
-export const SEED_REVIEWS: Review[] = [
-  { id: 'r1', name: 'Priya S.', company: 'AAPL', stars: 5, text: 'Tapped a revenue number and got the exact 10-K page, formula and XBRL tag. Nothing else does this on mobile.', date: '2026-09-28' },
-  { id: 'r2', name: 'Marcus T.', stars: 5, text: 'The forensic scores saved me from a value trap. Beneish breakdown in plain English is gold.', date: '2026-09-20' },
-  { id: 'r3', name: 'Elena R.', company: 'NVDA', stars: 4, text: 'Research pipeline animation is gorgeous and the Excel export is genuinely useful. Want quarterly tables next.', date: '2026-09-11' },
-  { id: 'r4', name: 'Devon K.', stars: 5, text: 'Finally — an AI finance app that shows receipts instead of vibes. The evidence sheets are the killer feature.', date: '2026-08-30' },
-];
-
 export const QUOTA_LIMIT = 5;

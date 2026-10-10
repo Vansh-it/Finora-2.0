@@ -187,6 +187,18 @@ export function ReviewsPage() {
         <div className="space-y-3 px-5 pt-4">
           {query.loading && !query.data && [0, 1, 2].map((i) => <Skeleton key={i} className="h-[150px] w-full" />)}
           {query.error && !query.data && <ErrorState message="Couldn't load reviews." onRetry={() => { void query.refetch(); }} />}
+          {query.data && query.data.length === 0 && (
+            <div className="card-dark anim-rise p-6 text-center">
+              <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[#ff5a1f]/15">
+                <Star size={22} className="text-[#ff8a3d]" fill="#ff8a3d" />
+              </span>
+              <h2 className="mt-3 font-display text-[18px] font-bold text-white">Be the first to review</h2>
+              <p className="mt-1.5 text-[14px] leading-6 text-[#a7a29a]">No reviews yet — and it takes no time. Rate your research and say what Finora helped you verify.</p>
+              <button onClick={() => setSheet(true)} className="btn-primary pressable mt-4 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl font-display text-[15px] font-semibold text-white">
+                <PenLine size={17} /> Write a review
+              </button>
+            </div>
+          )}
           {list.map((r, i) => (
             <figure key={r.id} className="card-dark anim-rise p-4" style={{ animationDelay: `${Math.min(i, 5) * 0.05}s` }}>
               <div className="flex items-center justify-between">
@@ -209,14 +221,16 @@ export function ReviewsPage() {
         </div>
       </PullToRefresh>
 
-      <button
-        onClick={() => setSheet(true)}
-        className="btn-primary pressable fixed bottom-[92px] z-40 flex min-h-[52px] items-center gap-2 rounded-2xl px-5 font-display text-[15px] font-semibold text-white"
-        style={{ right: 'max(16px, calc(50% - 215px + 16px))' }}
-        aria-haspopup="dialog"
-      >
-        <PenLine size={17} /> Write a review
-      </button>
+      {!(query.data && query.data.length === 0) && (
+        <button
+          onClick={() => setSheet(true)}
+          className="btn-primary pressable fixed bottom-[92px] z-40 flex min-h-[52px] items-center gap-2 rounded-2xl px-5 font-display text-[15px] font-semibold text-white"
+          style={{ right: 'max(16px, calc(50% - 215px + 16px))' }}
+          aria-haspopup="dialog"
+        >
+          <PenLine size={17} /> Write a review
+        </button>
+      )}
 
       <BottomSheet open={sheet} onClose={() => setSheet(false)} title="Write a review" snap={95}>
         <form onSubmit={submit} className="space-y-4">

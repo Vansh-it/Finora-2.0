@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, BadgeCheck, ChevronDown, FileText, Flame, LineChart, Play, Sigma, Zap } from 'lucide-react';
+import { ArrowRight, BadgeCheck, ChevronDown, FileText, Flame, LineChart, Play, Sigma, Star, Zap } from 'lucide-react';
 import { ResearchInput } from '../components/ResearchInput';
-import { EditorialHeading, HighlightText, SourceStamp, Stars, TickerChip } from '../components/ui';
-import { useReveal } from '../hooks/hooks';
-import { SEED_REVIEWS } from '../lib/data';
+import { EditorialHeading, HighlightText, Skeleton, SourceStamp, Stars, TickerChip } from '../components/ui';
+import { useCachedQuery, useReveal } from '../hooks/hooks';
+import { getReviews } from '../lib/api';
+import type { Review } from '../lib/data';
 
 const SOURCES = ['SEC EDGAR', 'Company IR', 'Twelve Data', 'Finora AI'];
 
@@ -37,6 +38,8 @@ export function HomePage() {
   const [dots, setDots] = useState(0);
   const [metricOpen, setMetricOpen] = useState(false);
   const [faq, setFaq] = useState(0);
+  const reviews = useCachedQuery<Review[]>('reviews', async () => getReviews(), { ttlMs: 60_000 });
+  const hasReviews = (reviews.data?.length ?? 0) > 0;
 
   return (
     <div ref={ref} className="grid-glow pb-10">
@@ -152,24 +155,43 @@ export function HomePage() {
         </Link>
       </section>
 
-      {/* REVIEWS CAROUSEL */}
+      {/* REVIEWS */}
       <section className="mt-10" aria-label="Reviews">
         <div className="px-5">
-          <EditorialHeading kicker="Loved by analysts" title="Reviews" right={<Link to="/reviews" className="flex min-h-[44px] items-center font-mono text-[11px] tracking-wider text-[#ff8a3d]">VIEW ALL</Link>} />
+          <EditorialHeading kicker={hasReviews ? 'Loved by analysts' : 'Your turn'} title="Reviews" right={<Link to="/reviews" className="flex min-h-[44px] items-center font-mono text-[11px] tracking-wider text-[#ff8a3d]">VIEW ALL</Link>} />
         </div>
-        <div className="snap-row mt-4 px-5">
-          {SEED_REVIEWS.map((r) => (
-            <figure key={r.id} data-reveal className="card-dark w-[78vw] max-w-[300px] p-4">
-              <Stars value={r.stars} />
-              <blockquote className="mt-2 line-clamp-3 text-[14px] leading-6 text-[#d7d3c8]">“{r.text}”</blockquote>
-              <figcaption className="mt-2 flex items-center gap-2">
-                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#ff5a1f]/15 font-display text-[13px] font-semibold text-[#ff8a3d]">{r.name[0]}</span>
-                <span className="text-[13px] font-medium text-white">{r.name}</span>
-                {r.company && <TickerChip ticker={r.company} />}
-              </figcaption>
-            </figure>
-          ))}
-        </div>
+        {reviews.loading && !reviews.data ? (
+          <div className="snap-row mt-4 px-5">
+            {[0, 1].map((i) => <Skeleton key={i} className="h-[140px] w-[78vw] max-w-[300px]" />)}
+          </div>
+        ) : hasReviews ? (
+          <div className="snap-row mt-4 px-5">
+            {reviews.data!.map((r) => (
+              <figure key={r.id} data-reveal className="card-dark w-[78vw] max-w-[300px] p-4">
+                <Stars value={r.stars} />
+                <blockquote className="mt-2 line-clamp-3 text-[14px] leading-6 text-[#d7d3c8]">“{r.text}”</blockquote>
+                <figcaption className="mt-2 flex items-center gap-2">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#ff5a1f]/15 font-display text-[13px] font-semibold text-[#ff8a3d]">{r.name[0]?.toUpperCase()}</span>
+                  <span className="text-[13px] font-medium text-white">{r.name}</span>
+                  {r.company && <TickerChip ticker={r.company} />}
+                </figcaption>
+              </figure>
+            ))}
+          </div>
+        ) : (
+          <div className="px-5 pt-4">
+            <div data-reveal className="card-dark p-5 text-center">
+              <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[#ff5a1f]/15">
+                <Star size={22} className="text-[#ff8a3d]" fill="#ff8a3d" />
+              </span>
+              <h3 className="mt-3 font-display text-[17px] font-bold text-white">Be the first to review Finora</h3>
+              <p className="mt-1.5 text-[14px] leading-6 text-[#a7a29a]">Reviews help the next analyst find us — and it takes no time. Rate your research and say what you verified.</p>
+              <Link to="/reviews" className="btn-primary pressable mt-4 flex min-h-[52px] items-center justify-center gap-2 rounded-2xl font-display text-[15px] font-semibold text-white">
+                <Star size={17} /> Write a review
+              </Link>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* FAQ */}
