@@ -192,8 +192,8 @@ export function ReviewsPage() {
               <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[#ff5a1f]/15">
                 <Star size={22} className="text-[#ff8a3d]" fill="#ff8a3d" />
               </span>
-              <h2 className="mt-3 font-display text-[18px] font-bold text-white">Be the first to review</h2>
-              <p className="mt-1.5 text-[14px] leading-6 text-[#a7a29a]">No reviews yet — and it takes no time. Rate your research and say what Finora helped you verify.</p>
+              <h2 className="mt-3 font-display text-[18px] font-bold text-white">Be the first to review Finora</h2>
+              <p className="mt-1.5 text-[14px] leading-6 text-[#a7a29a]">Your review means a lot to us — and it takes no time. Rate your research and say what Finora helped you verify.</p>
               <button onClick={() => setSheet(true)} className="btn-primary pressable mt-4 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl font-display text-[15px] font-semibold text-white">
                 <PenLine size={17} /> Write a review
               </button>
