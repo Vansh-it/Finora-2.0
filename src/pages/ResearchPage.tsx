@@ -55,7 +55,7 @@ function ResearchLanding() {
   }, []);
 
   return (
-    <div className="grid-glow relative flex min-h-full flex-col px-5 pb-6 pt-6">
+    <div className="grid-glow relative flex min-h-full flex-1 flex-col px-5 pb-10 pt-6">
       <div className="research-particles" aria-hidden />
 
       <div className="relative z-10">
@@ -174,7 +174,7 @@ function ResearchLanding() {
       </div>
 
       {/* thin footer */}
-      <footer className="relative z-10 mt-auto pt-8 text-center">
+      <footer className="relative z-10 mt-7 text-center">
         {/* Reserved two-line block: the tip length changes as it rotates, but the
             receipt line below never moves and the gap between them stays constant. */}
         <div className="mx-auto flex min-h-[32px] max-w-[340px] items-center justify-center px-5">

@@ -242,10 +242,10 @@ export function ChatPage() {
 
       <form
         onSubmit={(e) => { e.preventDefault(); send(input); }}
-        className="z-10 border-t border-white/10 bg-[#0e0e11] px-4 pb-3 pt-2.5"
-        style={{ paddingBottom: `calc(12px + ${inset > 0 ? inset : 0}px)` }}
+        className="relative z-10 bg-gradient-to-t from-[#0a0a0c] via-[#0a0a0c]/85 to-transparent px-4 pt-5"
+        style={{ paddingBottom: `calc(10px + ${inset > 0 ? inset : 0}px)` }}
       >
-        <div className="flex items-end gap-2">
+        <div className="flex items-end gap-2 rounded-[28px] border border-white/12 bg-[#16171c]/95 p-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.55)] backdrop-blur-sm">
           <textarea
             aria-label="Message Finora AI"
             value={input}
@@ -258,16 +258,15 @@ export function ChatPage() {
             }}
             rows={1}
             placeholder="Ask about any company…"
-            className="max-h-[120px] min-h-[48px] flex-1 resize-none rounded-2xl border border-white/12 bg-black/40 px-4 py-3 text-white outline-none placeholder:text-[#6b675c] focus:border-[#ff5a1f]/60"
+            className="max-h-[120px] min-h-[46px] flex-1 resize-none bg-transparent px-3.5 py-3 text-white outline-none placeholder:text-[#6b675c]"
           />
           <button
             type="submit" disabled={!input.trim() || busy} aria-label="Send message"
-            className="btn-primary pressable flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-white disabled:opacity-50"
+            className="btn-primary pressable flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white disabled:opacity-50"
           >
             <SendHorizonal size={19} />
           </button>
         </div>
-        <p className="mt-1.5 text-center font-mono text-[10px] text-[#6b675c]">Long-press a message to copy · Finora AI can make mistakes — verify receipts</p>
       </form>
     </div>
   );
