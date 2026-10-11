@@ -368,24 +368,38 @@ export async function* streamChat(messages: ChatMsg[], sessionId?: string): Asyn
 }
 
 // ── Reviews ───────────────────────────────────────────────────────────────────
-export async function getReviews(): Promise<Review[]> {
-  const res = await apiFetch<{ reviews?: Array<Record<string, unknown>> }>('/api/reviews', {
-    auth: false, timeoutMs: 15_000, retries: 1,
-  });
-  return (res.reviews ?? []).map((r, i) => ({
-    id: String(r.id ?? r.timestamp ?? `rev-${i}`),
-    name: String(r.name ?? 'Anonymous'),
-    company: r.company ? String(r.company) : undefined,
-    stars: Number(r.rating ?? 5),
-    text: String(r.review ?? ''),
-    date: String(r.timestamp ?? '').slice(0, 10) || new Date().toISOString().slice(0, 10),
-  }));
+export interface ReviewsResult {
+  reviews: Review[];
+  /** false when the server has no Google credentials / sheet access. */
+  configured: boolean;
+  error: string | null;
 }
 
-export async function postReview(input: { name: string; company?: string; stars: number; text: string }): Promise<Review> {
+export async function getReviews(limit = 50): Promise<ReviewsResult> {
+  const capped = Math.max(1, Math.min(50, Math.floor(limit)));
+  const res = await apiFetch<{
+    reviews?: Array<Record<string, unknown>>;
+    configured?: boolean;
+    error?: string | null;
+  }>(`/api/reviews?limit=${capped}`, { auth: false, timeoutMs: 15_000, retries: 1 });
+  return {
+    reviews: (res.reviews ?? []).map((r, i) => ({
+      id: String(r.id ?? r.timestamp ?? `rev-${i}`),
+      name: String(r.name ?? 'Anonymous'),
+      role: r.company ? String(r.company) : undefined,
+      stars: Number(r.rating ?? 5),
+      text: String(r.review ?? ''),
+      date: String(r.timestamp ?? '').slice(0, 10) || new Date().toISOString().slice(0, 10),
+    })),
+    configured: res.configured !== false,
+    error: res.error ?? null,
+  };
+}
+
+export async function postReview(input: { name: string; role?: string; stars: number; text: string }): Promise<Review> {
   const res = await apiFetch<{ status?: string; review?: Record<string, unknown>; error?: string }>('/api/reviews', {
     method: 'POST',
-    body: { name: input.name, company: input.company ?? '', rating: input.stars, review: input.text, website: '' },
+    body: { name: input.name, company: input.role ?? '', rating: input.stars, review: input.text, website: '' },
     auth: false,
     timeoutMs: 20_000,
     retries: 0,
@@ -397,7 +411,7 @@ export async function postReview(input: { name: string; company?: string; stars:
   return {
     id: String(r.id ?? r.timestamp ?? Date.now()),
     name: String(r.name ?? input.name),
-    company: (r.company ? String(r.company) : input.company) || undefined,
+    role: (r.company ? String(r.company) : input.role) || undefined,
     stars: Number(r.rating ?? input.stars),
     text: String(r.review ?? input.text),
     date: String(r.timestamp ?? '').slice(0, 10) || new Date().toISOString().slice(0, 10),

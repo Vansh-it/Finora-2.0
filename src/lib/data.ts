@@ -296,7 +296,8 @@ export function seedHistory(): HistoryItem[] {
 export interface Review {
   id: string;
   name: string;
-  company?: string;
+  /** Reviewer role: 'Student' or 'Teacher'. */
+  role?: string;
   stars: number;
   text: string;
   date: string;

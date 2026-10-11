@@ -52,7 +52,7 @@ function Shell() {
         {(isChat || isAuth) && <TopBar title={title} action={action} root={path === '/chat'} />}
         <main id="main" ref={mainRef} className="app-main" tabIndex={-1}>
           <ScrollKeeper mainRef={mainRef} />
-          <div key={path + (isProcessing ? params.get('ticker') : '')} className="anim-route min-h-full">
+          <div key={path + (isProcessing ? params.get('ticker') : '')} className={isChat ? 'anim-route h-full' : 'anim-route min-h-full'}>
             <Routes location={loc}>
               <Route path="/" element={<HomePage />} />
               <Route path="/auth" element={<AuthPage />} />

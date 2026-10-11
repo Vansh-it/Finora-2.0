@@ -2,19 +2,19 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import {
-  ArrowDownRight, ArrowUpRight, BadgeCheck, ChevronDown, Copy, Download,
-  ExternalLink, FileSpreadsheet, MessageSquare, Share2, Star, TriangleAlert,
+  ArrowDownRight, ArrowUpRight, BadgeCheck, ChevronDown, Copy, Download, ExternalLink,
+  FileSearch, FileSpreadsheet, LayoutDashboard, MessageSquare, Plus, Share2, Star, TriangleAlert,
 } from 'lucide-react';
 import { getSession } from '../lib/api';
 import type { DashboardSession, MetricEvidence } from '../lib/data';
-import { toggleWatch, getWatchlist } from '../lib/api';
-import { formatPercent } from '../lib/format';
+import { toggleWatch, getWatchlist, getHistory } from '../lib/api';
+import { formatPercent, formatDate } from '../lib/format';
 import { StatementTable } from '../components/StatementTable';
 import { EvidenceSheet } from '../components/EvidenceSheet';
 import { AskFinoraSheet } from '../components/AskFinoraSheet';
 import { PullToRefresh } from '../components/PullToRefresh';
 import { RevenueChart, Sparkline, TrendChart } from '../components/Charts';
-import { EmptyState, ErrorState, ProgressBar, Skeleton, SourceStamp, TickerChip, TierBadge, UnavailableMetric } from '../components/ui';
+import { ErrorState, ProgressBar, Skeleton, SourceStamp, TickerChip, TierBadge, UnavailableMetric } from '../components/ui';
 import { useCachedQuery, useCountUp } from '../hooks/hooks';
 import { useToast } from '../hooks/toast';
 import { cn } from '../lib/cn';
@@ -134,15 +134,7 @@ export function DashboardPage() {
   };
 
   if (!sessionId) {
-    return (
-      <div className="px-5 pt-10">
-        <EmptyState
-          title="No session open"
-          body="Research a company to open its dashboard, or pick up where you left off."
-          action={<Link to="/history" className="btn-primary pressable flex min-h-[52px] items-center justify-center rounded-2xl font-display text-[15px] font-semibold text-white">Open History</Link>}
-        />
-      </div>
-    );
+    return <BoardHome />;
   }
 
   if (query.loading && !query.data) {
@@ -206,6 +198,112 @@ export function DashboardPage() {
 
       <EvidenceSheet evidence={evidence} onClose={() => setEvidence(null)} />
       <AskFinoraSheet open={askOpen} onClose={() => setAskOpen(false)} ticker={s.ticker} sessionId={s.sessionId} />
+    </div>
+  );
+}
+
+// ---------------- Board landing (no session open) ----------------
+function BoardHome() {
+  const hist = useCachedQuery('history', async () => getHistory(), { ttlMs: 30_000 });
+  const items = hist.data ?? [];
+  const loading = hist.loading && !hist.data;
+  const hasItems = items.length > 0;
+
+  return (
+    <div className="grid-glow px-5 pb-10 pt-6">
+      <p className="mono-label anim-rise text-[#ff8a3d]">Board</p>
+      <h1 className="anim-rise mt-1 font-display text-[26px] font-bold leading-[30px] tracking-tight text-white">
+        {hasItems ? 'Pick up where you left off' : 'Your research board'}
+      </h1>
+
+      {/* hero / empty state */}
+      <div className="card-dark anim-rise stagger-1 relative mt-5 overflow-hidden p-6 text-center">
+        <div className="pointer-events-none absolute -top-16 left-1/2 h-40 w-40 -translate-x-1/2 rounded-full bg-[#ff5a1f]/15 blur-2xl" aria-hidden />
+        <div className="relative mx-auto flex h-20 w-20 items-center justify-center">
+          <span className="absolute inset-0 rounded-3xl border border-[#ff5a1f]/25" aria-hidden />
+          <span className="absolute inset-2 rounded-2xl border border-dashed border-white/10" aria-hidden />
+          {loading ? (
+            <Skeleton className="h-10 w-10 rounded-xl" />
+          ) : hasItems ? (
+            <LayoutDashboard size={30} className="text-[#ff8a3d]" />
+          ) : (
+            <Plus size={30} className="text-[#ff8a3d]" />
+          )}
+        </div>
+        {loading ? (
+          <div className="mx-auto mt-4 max-w-[260px] space-y-2">
+            <Skeleton className="h-5 w-40 mx-auto" />
+            <Skeleton className="h-4 w-full" />
+          </div>
+        ) : (
+          <>
+            <h2 className="mt-4 font-display text-[19px] font-bold text-white">
+              {hasItems ? `You have ${items.length} saved ${items.length === 1 ? 'research' : 'researches'}` : 'Nothing on the board yet'}
+            </h2>
+            <p className="mx-auto mt-1.5 max-w-[300px] text-[14px] leading-6 text-[#a7a29a]">
+              {hasItems
+                ? 'Tap any card below to reopen its dashboard — receipts, forensics and AI memo included.'
+                : 'Run one investigation and its full dashboard lands here: statements, 48+ metrics and a receipt for every number.'}
+            </p>
+          </>
+        )}
+
+        <div className="mt-5 space-y-2">
+          <Link
+            to="/research"
+            className="btn-primary pressable flex min-h-[54px] items-center justify-center gap-2 rounded-2xl font-display text-[15px] font-semibold text-white"
+          >
+            <Plus size={18} /> {hasItems ? 'Start a new research' : 'Start Research'}
+          </Link>
+          <Link
+            to="/history"
+            className="pressable flex min-h-[48px] items-center justify-center gap-2 rounded-2xl border border-white/15 bg-white/[0.05] font-display text-[14px] font-semibold text-white"
+          >
+            <FileSearch size={16} /> Open History
+          </Link>
+        </div>
+      </div>
+
+      {/* recent researches */}
+      {loading ? (
+        <div className="mt-5 space-y-2.5" aria-label="Loading recent researches">
+          {[0, 1, 2].map((i) => <Skeleton key={i} className="h-[76px] w-full" />)}
+        </div>
+      ) : hasItems ? (
+        <section className="anim-rise stagger-2 mt-5" aria-label="Recent researches">
+          <div className="mb-2.5 flex items-end justify-between">
+            <p className="mono-label text-[#6b675c]">Recent researches</p>
+            <Link to="/history" className="flex min-h-[44px] items-center font-mono text-[11px] tracking-wider text-[#ff8a3d]">VIEW ALL</Link>
+          </div>
+          <div className="space-y-2.5">
+            {items.slice(0, 5).map((h, i) => (
+              <Link
+                key={h.sessionId}
+                to={`/dashboard?session_id=${encodeURIComponent(h.sessionId)}`}
+                className="card-dark pressable group flex gap-3 p-3.5 anim-rise"
+                style={{ animationDelay: `${i * 0.05}s` }}
+                aria-label={`Open ${h.company} research from ${formatDate(h.date)}`}
+              >
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-[#ff5a1f]/30 bg-[#ff5a1f]/10 font-display text-[15px] font-bold text-[#ff8a3d]">
+                  {(h.ticker || h.company || '?').slice(0, 1).toUpperCase()}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <TickerChip ticker={h.ticker} />
+                    <span className="truncate font-mono text-[11px] text-[#6b675c]">{h.period || formatDate(h.date)}</span>
+                  </span>
+                  <span className="mt-0.5 block truncate font-display text-[15px] font-semibold text-white">{h.company}</span>
+                  <span className="mt-0.5 flex items-center gap-3 font-mono text-[11px] text-[#6b675c]">
+                    <span>{h.metrics} metrics</span>
+                    <span>{h.sources} sources</span>
+                  </span>
+                </span>
+                <ArrowUpRight size={18} className="mt-0.5 shrink-0 text-[#6b675c] transition-transform group-active:translate-x-0.5 group-active:-translate-y-0.5" />
+              </Link>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }

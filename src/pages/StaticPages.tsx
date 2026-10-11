@@ -5,10 +5,11 @@ import {
   FileText, History, Home, PenLine, ShieldCheck, Sigma, Star, Zap,
 } from 'lucide-react';
 import { ApiError, getReviews, postReview } from '../lib/api';
+import type { ReviewsResult } from '../lib/api';
 import type { Review } from '../lib/data';
 import { BottomSheet } from '../components/BottomSheet';
 import { PullToRefresh } from '../components/PullToRefresh';
-import { Button, EditorialHeading, HighlightText, Skeleton, SourceStamp, Stars, TickerChip } from '../components/ui';
+import { Button, EditorialHeading, HighlightText, Skeleton, SourceStamp, Stars } from '../components/ui';
 import { formatClock, formatDate } from '../lib/format';
 import { getQuotaState } from '../lib/api';
 import { isAuthed } from '../lib/auth';
@@ -140,18 +141,25 @@ export function AboutPage() {
 }
 
 // ---------------- Reviews ----------------
+// Device-local flag: once a visitor posts a review we stop showing the invitation.
+const REVIEW_FLAG = 'finora_review_submitted_v1';
+
+function readReviewFlag(): boolean {
+  try { return localStorage.getItem(REVIEW_FLAG) === '1'; } catch { return false; }
+}
+
 export function ReviewsPage() {
   const toast = useToast();
-  const query = useCachedQuery<Review[]>('reviews', async () => getReviews(), { ttlMs: 60_000 });
+  const query = useCachedQuery<ReviewsResult>('reviews', async () => getReviews(), { ttlMs: 60_000 });
   const [visible, setVisible] = useState(10);
   const [sheet, setSheet] = useState(false);
-  const [form, setForm] = useState({ name: '', company: '', stars: 5, text: '', site: '' });
-  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState<{ name: string; role: '' | 'Student' | 'Teacher'; stars: number; text: string }>({ name: '', role: '', stars: 5, text: '' });
+  const [pending, setPending] = useState<Review[]>([]);
   const [formErr, setFormErr] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(readReviewFlag);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (form.site) return; // honeypot
     if (form.text.trim().length < 10 || form.text.length > 2000) {
       setFormErr('Review must be 10–2000 characters.');
       return;
@@ -160,23 +168,59 @@ export function ReviewsPage() {
       setFormErr('Please add your name.');
       return;
     }
-    setBusy(true);
+    if (!form.role) {
+      setFormErr('Please choose Student or Teacher.');
+      return;
+    }
+    const input = {
+      name: form.name.trim(),
+      role: form.role,
+      stars: form.stars,
+      text: form.text.trim(),
+    };
+    // Optimistic: show the review immediately, then persist in the background.
+    const optimistic: Review = {
+      id: `pending-${Date.now()}`,
+      name: input.name,
+      role: input.role,
+      stars: input.stars,
+      text: input.text,
+      date: new Date().toISOString().slice(0, 10),
+    };
     setFormErr(null);
+    setPending((p) => [optimistic, ...p]);
+    setSheet(false);
+    toast('Review posted — thank you');
     try {
-      await postReview({ name: form.name.trim(), company: form.company.trim().toUpperCase() || undefined, stars: form.stars, text: form.text.trim() });
-      setSheet(false);
-      setForm({ name: '', company: '', stars: 5, text: '', site: '' });
-      await query.refetch();
-      toast('Review posted — thank you');
+      await postReview(input);
+      try { localStorage.setItem(REVIEW_FLAG, '1'); } catch { /* ignore */ }
+      setSubmitted(true);
+      setForm({ name: '', role: '', stars: 5, text: '' });
+      let synced = false;
+      try {
+        await query.refetch();
+        synced = true;
+      } catch {
+        /* keep the optimistic copy if the refresh fails */
+      }
+      if (synced) setPending((p) => p.filter((r) => r.id !== optimistic.id));
     } catch (err) {
-      setFormErr(err instanceof ApiError ? err.message : 'Could not post review.');
-    } finally {
-      setBusy(false);
+      const msg = err instanceof ApiError ? err.message : 'Could not post review.';
+      setPending((p) => p.filter((r) => r.id !== optimistic.id));
+      setFormErr(msg);
+      setSheet(true);
+      toast(msg, 'warn');
     }
   };
 
-  const list = (query.data ?? []).slice(0, visible);
-  const empty = !query.loading && (query.data?.length ?? 0) === 0;
+  const serverList = query.data?.reviews ?? [];
+  const total = pending.length + serverList.length;
+  const list = [...pending, ...serverList].slice(0, visible);
+  const unavailable = !!query.data && !query.data.configured;
+  const hasError = !!query.error || unavailable;
+  // The invitation shows to anyone who hasn't posted a review yet, even when
+  // other people's reviews already exist below it.
+  const showInvitation = !submitted && !query.loading && !hasError;
 
   return (
     <div className="pb-28">
@@ -187,21 +231,33 @@ export function ReviewsPage() {
       <PullToRefresh onRefresh={() => query.refetch()}>
         <div className="space-y-3 px-5 pt-4">
           {query.loading && !query.data && [0, 1, 2].map((i) => <Skeleton key={i} className="h-[150px] w-full" />)}
-          {empty && (
-            <div className="card-dark anim-rise p-6 text-center">
+          {hasError && (
+            <div role="status" className="card-dark anim-rise border border-[#fbbf24]/30 p-4">
+              <p className="font-display text-[15px] font-semibold text-white">Reviews are temporarily unavailable</p>
+              <p className="mt-1 text-[13px] leading-5 text-[#a7a29a]">
+                {query.error?.message || query.data?.error || 'Please try again in a moment.'}
+              </p>
+              <button onClick={() => { void query.refetch(); }} className="pressable mt-3 flex min-h-[44px] items-center font-mono text-[11px] tracking-wider text-[#ff8a3d] underline decoration-white/20">
+                Retry loading reviews
+              </button>
+            </div>
+          )}
+          {showInvitation && (
+            <div className="card-dark anim-rise border border-[#ff5a1f]/25 p-6 text-center">
               <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[#ff5a1f]/15">
                 <Star size={22} className="text-[#ff8a3d]" fill="#ff8a3d" />
               </span>
-              <h2 className="mt-3 font-display text-[18px] font-bold text-white">Be the first to review Finora</h2>
-              <p className="mt-1.5 text-[14px] leading-6 text-[#a7a29a]">Your review means a lot to us — and it takes no time. Rate your research and say what Finora helped you verify.</p>
+              <h2 className="mt-3 font-display text-[18px] font-bold text-white">
+                {total === 0 ? 'Be the first to review Finora' : 'Share your take on Finora'}
+              </h2>
+              <p className="mt-1.5 text-[14px] leading-6 text-[#a7a29a]">
+                {total === 0
+                  ? 'Your review means a lot to us — and it takes no time. Rate your research and say what Finora helped you verify.'
+                  : 'You haven’t written a review yet. Tell others what Finora helped you verify — it takes a minute.'}
+              </p>
               <button onClick={() => setSheet(true)} className="btn-primary pressable mt-4 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl font-display text-[15px] font-semibold text-white">
                 <PenLine size={17} /> Write a review
               </button>
-              {(query.error) && (
-                <button onClick={() => { void query.refetch(); }} className="pressable mx-auto mt-3 flex min-h-[44px] items-center text-[13px] text-[#a7a29a] underline decoration-white/20">
-                  Retry loading reviews
-                </button>
-              )}
             </div>
           )}
           {list.map((r, i) => (
@@ -214,19 +270,21 @@ export function ReviewsPage() {
               <figcaption className="mt-2.5 flex items-center gap-2">
                 <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#ff5a1f]/15 font-display text-[13px] font-semibold text-[#ff8a3d]">{r.name[0]?.toUpperCase()}</span>
                 <span className="text-[13px] font-medium text-white">{r.name}</span>
-                {r.company && <TickerChip ticker={r.company} />}
+                {r.role && (
+                  <span className="inline-flex items-center rounded-lg border border-white/12 bg-white/[0.06] px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-[#a7a29a]">{r.role}</span>
+                )}
               </figcaption>
             </figure>
           ))}
-          {query.data && visible < query.data.length && (
+          {visible < total && (
             <button onClick={() => setVisible((v) => v + 10)} className="pressable min-h-[52px] w-full rounded-2xl border border-white/15 bg-white/[0.05] text-sm font-semibold text-white">
-              Load more ({query.data.length - visible} left)
+              Load more ({total - visible} left)
             </button>
           )}
         </div>
       </PullToRefresh>
 
-      {!empty && (
+      {submitted && !hasError && (
         <button
           onClick={() => setSheet(true)}
           className="btn-primary pressable fixed bottom-[92px] z-40 flex min-h-[52px] items-center gap-2 rounded-2xl px-5 font-display text-[15px] font-semibold text-white"
@@ -245,9 +303,17 @@ export function ReviewsPage() {
               className="min-h-[52px] w-full rounded-2xl border border-white/12 bg-black/40 px-4 text-white outline-none placeholder:text-[#6b675c]" placeholder="Your name" autoComplete="name" />
           </div>
           <div>
-            <label htmlFor="rv-co" className="mono-label mb-1.5 block text-[#a7a29a]">Company (optional)</label>
-            <input id="rv-co" value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })}
-              className="min-h-[52px] w-full rounded-2xl border border-white/12 bg-black/40 px-4 uppercase text-white outline-none placeholder:text-[#6b675c]" placeholder="AAPL" autoComplete="off" maxLength={6} />
+            <span id="rv-role-label" className="mono-label mb-1.5 block text-[#a7a29a]">I am a</span>
+            <div role="radiogroup" aria-labelledby="rv-role-label" className="grid grid-cols-2 gap-2">
+              {(['Student', 'Teacher'] as const).map((role) => (
+                <button key={role} type="button" role="radio" aria-checked={form.role === role}
+                  onClick={() => setForm({ ...form, role })}
+                  className={cn('pressable min-h-[52px] rounded-2xl border px-4 font-display text-[15px] font-semibold transition-all',
+                    form.role === role ? 'border-[#ff5a1f]/60 bg-[#ff5a1f]/15 text-white' : 'border-white/12 bg-black/40 text-[#a7a29a]')}>
+                  {role}
+                </button>
+              ))}
+            </div>
           </div>
           <div>
             <span id="rv-stars-label" className="mono-label mb-1.5 block text-[#a7a29a]">Rating</span>
@@ -268,11 +334,8 @@ export function ReviewsPage() {
               className="min-h-[110px] w-full resize-none rounded-2xl border border-white/12 bg-black/40 px-4 py-3 text-white outline-none placeholder:text-[#6b675c]" />
             <p className="num mt-1 text-right font-mono text-[11px] text-[#6b675c]" aria-live="polite">{form.text.length}/2000</p>
           </div>
-          {/* honeypot */}
-          <input aria-hidden tabIndex={-1} autoComplete="off" value={form.site} onChange={(e) => setForm({ ...form, site: e.target.value })}
-            className="absolute h-0 w-0 opacity-0" name="website" />
           {formErr && <p role="alert" className="rounded-xl border border-[#f87171]/40 bg-[#f87171]/10 p-3 text-[13px] text-[#f87171]">{formErr}</p>}
-          <Button type="submit" size="lg" loading={busy}>Post review</Button>
+          <Button type="submit" size="lg">Post review</Button>
         </form>
       </BottomSheet>
     </div>

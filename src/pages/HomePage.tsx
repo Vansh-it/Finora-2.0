@@ -2,10 +2,10 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, BadgeCheck, ChevronDown, FileText, Flame, LineChart, Play, Sigma, Star, Zap } from 'lucide-react';
 import { ResearchInput } from '../components/ResearchInput';
-import { EditorialHeading, HighlightText, Skeleton, SourceStamp, Stars, TickerChip } from '../components/ui';
+import { EditorialHeading, HighlightText, Skeleton, SourceStamp, Stars } from '../components/ui';
 import { useCachedQuery, useReveal } from '../hooks/hooks';
 import { getReviews } from '../lib/api';
-import type { Review } from '../lib/data';
+import type { ReviewsResult } from '../lib/api';
 
 const SOURCES = ['SEC EDGAR', 'Company IR', 'Twelve Data', 'Finora AI'];
 
@@ -38,8 +38,9 @@ export function HomePage() {
   const [dots, setDots] = useState(0);
   const [metricOpen, setMetricOpen] = useState(false);
   const [faq, setFaq] = useState(0);
-  const reviews = useCachedQuery<Review[]>('reviews', async () => getReviews(), { ttlMs: 60_000 });
-  const hasReviews = (reviews.data?.length ?? 0) > 0;
+  const reviews = useCachedQuery<ReviewsResult>('reviews', async () => getReviews(), { ttlMs: 60_000 });
+  const reviewList = reviews.data?.reviews ?? [];
+  const hasReviews = reviewList.length > 0;
 
   return (
     <div ref={ref} className="grid-glow pb-10">
@@ -166,14 +167,16 @@ export function HomePage() {
           </div>
         ) : hasReviews ? (
           <div className="snap-row mt-4 px-5">
-            {reviews.data!.map((r) => (
+            {reviewList.map((r) => (
               <figure key={r.id} data-reveal className="card-dark w-[78vw] max-w-[300px] p-4">
                 <Stars value={r.stars} />
                 <blockquote className="mt-2 line-clamp-3 text-[14px] leading-6 text-[#d7d3c8]">“{r.text}”</blockquote>
                 <figcaption className="mt-2 flex items-center gap-2">
                   <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#ff5a1f]/15 font-display text-[13px] font-semibold text-[#ff8a3d]">{r.name[0]?.toUpperCase()}</span>
                   <span className="text-[13px] font-medium text-white">{r.name}</span>
-                  {r.company && <TickerChip ticker={r.company} />}
+                  {r.role && (
+                    <span className="inline-flex items-center rounded-lg border border-white/12 bg-white/[0.06] px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-[#a7a29a]">{r.role}</span>
+                  )}
                 </figcaption>
               </figure>
             ))}
@@ -185,7 +188,11 @@ export function HomePage() {
                 <Star size={22} className="text-[#ff8a3d]" fill="#ff8a3d" />
               </span>
               <h3 className="mt-3 font-display text-[17px] font-bold text-white">Be the first to review Finora</h3>
-              <p className="mt-1.5 text-[14px] leading-6 text-[#a7a29a]">Reviews help the next analyst find us — and it takes no time. Rate your research and say what you verified.</p>
+              <p className="mt-1.5 text-[14px] leading-6 text-[#a7a29a]">
+                {reviews.data && !reviews.data.configured
+                  ? 'Reviews are temporarily unavailable — please try again in a moment.'
+                  : 'Reviews help the next analyst find us — and it takes no time. Rate your research and say what you verified.'}
+              </p>
               <Link to="/reviews" className="btn-primary pressable mt-4 flex min-h-[52px] items-center justify-center gap-2 rounded-2xl font-display text-[15px] font-semibold text-white">
                 <Star size={17} /> Write a review
               </Link>
