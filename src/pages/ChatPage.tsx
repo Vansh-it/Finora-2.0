@@ -243,7 +243,7 @@ export function ChatPage() {
       <form
         onSubmit={(e) => { e.preventDefault(); send(input); }}
         className="relative z-10 bg-gradient-to-t from-[#0a0a0c] via-[#0a0a0c]/85 to-transparent px-4 pt-5"
-        style={{ paddingBottom: `calc(10px + ${inset > 0 ? inset : 0}px)` }}
+        style={{ paddingBottom: `calc(${inset > 80 ? 12 : 36}px + ${inset > 0 ? inset : 0}px)` }}
       >
         <div className="flex items-end gap-2 rounded-[28px] border border-white/12 bg-[#16171c]/95 p-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.55)] backdrop-blur-sm">
           <textarea

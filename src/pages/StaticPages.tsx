@@ -219,8 +219,9 @@ export function ReviewsPage() {
   const unavailable = !!query.data && !query.data.configured;
   const hasError = !!query.error || unavailable;
   // The invitation shows to anyone who hasn't posted a review yet, even when
-  // other people's reviews already exist below it.
-  const showInvitation = !submitted && !query.loading && !hasError;
+  // other people's reviews already exist below it — and even when the list is
+  // temporarily unavailable, so the write-review option is never a dead end.
+  const showInvitation = !submitted && !query.loading;
 
   return (
     <div className="pb-28">
@@ -284,7 +285,7 @@ export function ReviewsPage() {
         </div>
       </PullToRefresh>
 
-      {submitted && !hasError && (
+      {submitted && (
         <button
           onClick={() => setSheet(true)}
           className="btn-primary pressable fixed bottom-[92px] z-40 flex min-h-[52px] items-center gap-2 rounded-2xl px-5 font-display text-[15px] font-semibold text-white"
